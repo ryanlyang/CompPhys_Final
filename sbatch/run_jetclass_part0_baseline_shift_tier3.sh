@@ -14,9 +14,10 @@ set -euo pipefail
 CONDA_ENV="${CONDA_ENV:-atlas_kd}"
 DATASET_DIR="${DATASET_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part0}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/home/ryreu/atlas/PracticeTagging/runs/jetclass_part0_shiftstudy}"
-RUN_TAG="${RUN_TAG:-part0_kinpid_seed0}"
 FEATURE_SET="${FEATURE_SET:-kinpid}"           # kin | kinpid | full
 SEED="${SEED:-0}"
+RUN_TAG="${RUN_TAG:-part0_${FEATURE_SET}_seed${SEED}}"
+LOG_ROOT="${LOG_ROOT:-${OUTPUT_ROOT}/slurm_logs}"
 
 # File-index split inside each class. Defaults assume *_000..*_009 exist.
 TRAIN_INDICES="${TRAIN_INDICES:-0-7}"
@@ -50,6 +51,7 @@ set +u
 source ~/.bashrc
 set -u
 conda activate "${CONDA_ENV}"
+export PATH="${HOME}/.local/bin:${PATH}"
 
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 
@@ -58,8 +60,16 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-RUN_DIR="${OUTPUT_ROOT}/${RUN_TAG}_job${SLURM_JOB_ID:-manual}"
-mkdir -p "${RUN_DIR}"
+JOB_ID="${SLURM_JOB_ID:-manual}"
+RUN_DIR="${OUTPUT_ROOT}/${RUN_TAG}_job${JOB_ID}"
+LOG_DIR="${LOG_ROOT}/${RUN_TAG}"
+STDOUT_LOG="${LOG_DIR}/job${JOB_ID}.out"
+STDERR_LOG="${LOG_DIR}/job${JOB_ID}.err"
+mkdir -p "${RUN_DIR}" "${LOG_DIR}"
+
+# Route all script logs to a stable folder. Slurm's --output/--error remain as
+# minimal bootstrap logs, while the full run logs go to LOG_DIR.
+exec > >(tee -a "${STDOUT_LOG}") 2> >(tee -a "${STDERR_LOG}" >&2)
 
 if [[ ! -d "${DATASET_DIR}" ]]; then
   echo "ERROR: DATASET_DIR does not exist: ${DATASET_DIR}" >&2
@@ -79,7 +89,7 @@ for mod in torch awkward vector uproot; do
   fi
 done
 
-if ! command -v weaver >/dev/null 2>&1; then
+if ! python3 -c "import weaver.train" >/dev/null 2>&1; then
   missing_modules+=("weaver-core")
 fi
 
@@ -88,7 +98,8 @@ if [[ "${#missing_modules[@]}" -gt 0 ]]; then
     echo "Installing missing deps: ${missing_modules[*]}"
     python3 -m pip install --upgrade pip
     # weaver-core pulls related training dependencies.
-    python3 -m pip install 'weaver-core>=0.4' awkward vector uproot
+    python3 -m pip install --no-user 'weaver-core>=0.4' awkward vector uproot
+    export PATH="${HOME}/.local/bin:${PATH}"
   else
     echo "ERROR: Missing dependencies: ${missing_modules[*]}" >&2
     echo "Set AUTO_INSTALL_DEPS=1 to install automatically, or pre-install manually." >&2
@@ -128,6 +139,9 @@ CMD=(
 echo "============================================================"
 echo "JetClass part0 baseline + shift-correlation run"
 echo "Run dir: ${RUN_DIR}"
+echo "Log dir: ${LOG_DIR}"
+echo "Stdout log: ${STDOUT_LOG}"
+echo "Stderr log: ${STDERR_LOG}"
 echo "Dataset: ${DATASET_DIR}"
 echo "Feature set: ${FEATURE_SET}"
 echo "Seed: ${SEED}"
@@ -149,3 +163,5 @@ echo "  ${RUN_DIR}/saved_model.pt"
 echo "  ${RUN_DIR}/summary.json"
 echo "  ${RUN_DIR}/corruption_metrics.csv"
 echo "  ${RUN_DIR}/correlations.csv"
+echo "  ${STDOUT_LOG}"
+echo "  ${STDERR_LOG}"

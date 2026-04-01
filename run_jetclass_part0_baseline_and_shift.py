@@ -13,6 +13,7 @@ evaluation in Python so we can run controlled corruption studies.
 import argparse
 import csv
 import glob
+import importlib.util
 import json
 import math
 import os
@@ -125,12 +126,21 @@ def parse_float_list(spec: str) -> List[float]:
     return vals
 
 
-def ensure_weaver_available() -> None:
-    if shutil.which("weaver") is None:
-        raise RuntimeError(
-            "Cannot find `weaver` in PATH. Install it first, e.g.\n"
-            "  pip install 'weaver-core>=0.4'"
-        )
+def resolve_weaver_command() -> List[str]:
+    weaver_bin = shutil.which("weaver")
+    if weaver_bin is not None:
+        return [weaver_bin]
+
+    # Fallback when console scripts are not on PATH but module is installed.
+    if importlib.util.find_spec("weaver.train") is not None:
+        return [sys.executable, "-m", "weaver.train"]
+
+    raise RuntimeError(
+        "Cannot find `weaver` executable nor `weaver.train` module.\n"
+        "Install it with:\n"
+        "  pip install 'weaver-core>=0.4'\n"
+        "and ensure either `weaver` is on PATH or the Python module is available."
+    )
 
 
 def _safe_symlink(src: Path, dst: Path) -> None:
@@ -176,8 +186,10 @@ def prepare_split_dirs(
     return split_paths
 
 
-def build_weaver_command(args: argparse.Namespace, split_paths: Dict[str, Path]) -> List[str]:
-    cmd: List[str] = ["weaver", "--data-train"]
+def build_weaver_command(
+    args: argparse.Namespace, split_paths: Dict[str, Path], weaver_cmd: Sequence[str]
+) -> List[str]:
+    cmd: List[str] = [*weaver_cmd, "--data-train"]
     for cls in CLASS_NAMES:
         cmd.append(f"{cls}:{split_paths['train']}/{cls}_*.root")
 
@@ -880,8 +892,8 @@ def main() -> int:
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     else:
-        ensure_weaver_available()
-        cmd = build_weaver_command(args, split_paths)
+        weaver_cmd = resolve_weaver_command()
+        cmd = build_weaver_command(args, split_paths, weaver_cmd=weaver_cmd)
         print("Running training command:")
         print(" ".join(cmd))
         subprocess.run(cmd, check=True)
