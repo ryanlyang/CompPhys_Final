@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=aspen_schema
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
 #SBATCH --time=01:00:00
