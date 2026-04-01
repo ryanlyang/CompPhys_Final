@@ -8,6 +8,8 @@ __pycache__/
 # C extensions
 *.so
 
+data/AspenOpenJets
+
 # Distribution / packaging
 .Python
 build/
