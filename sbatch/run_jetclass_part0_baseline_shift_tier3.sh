@@ -5,8 +5,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=12:00:00
-#SBATCH --output=slurm_jcpart0_shift_%j.out
-#SBATCH --error=slurm_jcpart0_shift_%j.err
+#SBATCH --output=sbatch/slurm_logs/slurm_jcpart0_shift_%j.out
+#SBATCH --error=sbatch/slurm_logs/slurm_jcpart0_shift_%j.err
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ CONDA_ENV="${CONDA_ENV:-atlas_kd}"
 DATASET_DIR="${DATASET_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part0}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/home/ryreu/atlas/PracticeTagging/runs/jetclass_part0_shiftstudy}"
 FEATURE_SET="${FEATURE_SET:-kinpid}"           # kin | kinpid | full
-SEED="${SEED:-0}"
+SEED="${SEED:-1}"
 RUN_TAG="${RUN_TAG:-part0_${FEATURE_SET}_seed${SEED}}"
 LOG_ROOT="${LOG_ROOT:-${OUTPUT_ROOT}/slurm_logs}"
 
@@ -46,6 +46,9 @@ JITTER_LEVELS="${JITTER_LEVELS:-0.01,0.03,0.05,0.1}"
 
 # Set AUTO_INSTALL_DEPS=1 to install missing packages into current env.
 AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-0}"
+# Set MIRROR_TO_SLURM_STDIO=1 if you also want runtime logs mirrored to Slurm
+# stdout/stderr files. Default keeps logs only in LOG_DIR files.
+MIRROR_TO_SLURM_STDIO="${MIRROR_TO_SLURM_STDIO:-0}"
 
 set +u
 source ~/.bashrc
@@ -67,9 +70,13 @@ STDOUT_LOG="${LOG_DIR}/job${JOB_ID}.out"
 STDERR_LOG="${LOG_DIR}/job${JOB_ID}.err"
 mkdir -p "${RUN_DIR}" "${LOG_DIR}"
 
-# Route all script logs to a stable folder. Slurm's --output/--error remain as
-# minimal bootstrap logs, while the full run logs go to LOG_DIR.
-exec > >(tee -a "${STDOUT_LOG}") 2> >(tee -a "${STDERR_LOG}" >&2)
+# Route all script logs to a stable folder. By default do not mirror runtime
+# logs back to Slurm stdout/stderr (to avoid clutter in submit directory logs).
+if [[ "${MIRROR_TO_SLURM_STDIO}" == "1" ]]; then
+  exec > >(tee -a "${STDOUT_LOG}") 2> >(tee -a "${STDERR_LOG}" >&2)
+else
+  exec > >(tee -a "${STDOUT_LOG}" >/dev/null) 2> >(tee -a "${STDERR_LOG}" >/dev/null)
+fi
 
 if [[ ! -d "${DATASET_DIR}" ]]; then
   echo "ERROR: DATASET_DIR does not exist: ${DATASET_DIR}" >&2
