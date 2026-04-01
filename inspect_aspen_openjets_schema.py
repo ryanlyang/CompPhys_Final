@@ -30,6 +30,8 @@ class DatasetEntry:
     shape: Tuple[int, ...]
     dtype: str
     fields: Tuple[str, ...]
+    attr_keys: Tuple[str, ...]
+    attr_hints: Tuple[str, ...]
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,6 +58,12 @@ def parse_args() -> argparse.Namespace:
         default=2048,
         help="Number of flattened elements to sample for lightweight min/max checks.",
     )
+    parser.add_argument(
+        "--max-key-preview",
+        type=int,
+        default=120,
+        help="Number of key candidates to print in text report preview.",
+    )
     return parser.parse_args()
 
 
@@ -68,10 +76,53 @@ def norm_key(s: str) -> str:
 
 def collect_entries(file_path: Path) -> List[DatasetEntry]:
     out: List[DatasetEntry] = []
+
+    def _decode_maybe_bytes(x):
+        if isinstance(x, (bytes, bytearray)):
+            try:
+                return x.decode("utf-8", errors="ignore")
+            except Exception:
+                return str(x)
+        return x
+
+    def _attr_hint(name: str, val) -> str:
+        name_l = str(name).lower()
+        decoded = _decode_maybe_bytes(val)
+        if isinstance(decoded, np.ndarray):
+            flat = decoded.reshape(-1)
+            sample = [_decode_maybe_bytes(v) for v in flat[:12].tolist()]
+            if flat.size <= 12:
+                return f"{name}={sample}"
+            return f"{name}[:12]={sample} (len={int(flat.size)})"
+        if isinstance(decoded, (list, tuple)):
+            sample = [_decode_maybe_bytes(v) for v in decoded[:12]]
+            if len(decoded) <= 12:
+                return f"{name}={sample}"
+            return f"{name}[:12]={sample} (len={len(decoded)})"
+        if isinstance(decoded, (str, np.str_)):
+            txt = str(decoded).strip()
+            if len(txt) > 200:
+                txt = txt[:200] + "..."
+            return f"{name}={txt}"
+        return f"{name}={decoded}"
+
     with h5py.File(file_path, "r") as f:
         def visitor(name: str, obj) -> None:
             if isinstance(obj, h5py.Dataset):
                 fields: Tuple[str, ...] = tuple(obj.dtype.names) if obj.dtype.names else tuple()
+                attr_keys = tuple(sorted(str(k) for k in obj.attrs.keys()))
+                attr_hints: List[str] = []
+                for ak in attr_keys:
+                    al = ak.lower()
+                    # Prioritize attribute names that commonly store column metadata.
+                    if any(
+                        tok in al
+                        for tok in ("feature", "column", "name", "label", "schema", "field", "branch")
+                    ):
+                        try:
+                            attr_hints.append(_attr_hint(ak, obj.attrs[ak]))
+                        except Exception:
+                            attr_hints.append(f"{ak}=<unreadable>")
                 out.append(
                     DatasetEntry(
                         file=file_path.name,
@@ -79,6 +130,8 @@ def collect_entries(file_path: Path) -> List[DatasetEntry]:
                         shape=tuple(obj.shape),
                         dtype=str(obj.dtype),
                         fields=fields,
+                        attr_keys=attr_keys,
+                        attr_hints=tuple(attr_hints),
                     )
                 )
         f.visititems(visitor)
@@ -301,7 +354,18 @@ def readiness(mapping: Dict[str, Dict[str, object]]) -> Dict[str, object]:
 def write_key_table(entries: Sequence[DatasetEntry], out_csv: Path) -> None:
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["file", "path", "shape", "dtype", "fields"])
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "file",
+                "path",
+                "shape",
+                "dtype",
+                "fields",
+                "attr_keys",
+                "attr_hints",
+            ],
+        )
         writer.writeheader()
         for e in entries:
             writer.writerow(
@@ -311,6 +375,8 @@ def write_key_table(entries: Sequence[DatasetEntry], out_csv: Path) -> None:
                     "shape": str(e.shape),
                     "dtype": e.dtype,
                     "fields": "|".join(e.fields),
+                    "attr_keys": "|".join(e.attr_keys),
+                    "attr_hints": " || ".join(e.attr_hints),
                 }
             )
 
@@ -344,6 +410,11 @@ def main() -> int:
             candidate_keys.append(fld)
             candidate_keys.append(f"{e.path}.{fld}")
             candidate_keys.append(f"{e.path}/{fld}")
+        for hint in e.attr_hints:
+            # Pull out token-like words from attribute hints as additional key candidates.
+            for tok in re.split(r"[^A-Za-z0-9_]+", hint):
+                if len(tok) >= 3:
+                    candidate_keys.append(tok)
 
     unique_paths = sorted(set(candidate_keys))
     mapping = detect_mapping(unique_paths)
@@ -387,6 +458,27 @@ def main() -> int:
     lines.append(f"Files scanned ({len(files)}):")
     for f in files:
         lines.append(f"  - {f}")
+    lines.append("")
+    lines.append("Dataset Path Preview:")
+    unique_dataset_paths = sorted(set(e.path for e in all_entries))
+    for p in unique_dataset_paths[: args.max_key_preview]:
+        lines.append(f"  {p}")
+    if len(unique_dataset_paths) > args.max_key_preview:
+        lines.append(f"  ... ({len(unique_dataset_paths) - args.max_key_preview} more)")
+    lines.append("")
+    lines.append("Attribute Hint Preview:")
+    shown_hints = 0
+    for e in all_entries:
+        if not e.attr_hints:
+            continue
+        lines.append(f"  [{e.file}] {e.path}")
+        for h in e.attr_hints[:6]:
+            lines.append(f"    - {h}")
+        shown_hints += 1
+        if shown_hints >= 20:
+            break
+    if shown_hints == 0:
+        lines.append("  [none detected]")
     lines.append("")
     lines.append("Readiness:")
     lines.append(f"  kin_ready:    {ready['kin_ready']}")
