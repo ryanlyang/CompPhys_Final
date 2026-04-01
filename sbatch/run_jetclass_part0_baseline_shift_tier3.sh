@@ -37,6 +37,8 @@ FETCH_STEP="${FETCH_STEP:-0.01}"
 START_LR="${START_LR:-1e-3}"
 GPUS="${GPUS:-0}"
 DEVICE="${DEVICE:-cuda}"
+SKIP_TRAIN="${SKIP_TRAIN:-0}"
+CHECKPOINT="${CHECKPOINT:-}"
 
 # Corruption severities.
 NOISE_LEVELS="${NOISE_LEVELS:-0.01,0.03,0.05,0.1}"
@@ -143,6 +145,14 @@ CMD=(
   --jitter-levels "${JITTER_LEVELS}"
 )
 
+if [[ "${SKIP_TRAIN}" == "1" ]]; then
+  if [[ -z "${CHECKPOINT}" ]]; then
+    echo "ERROR: SKIP_TRAIN=1 requires CHECKPOINT=/abs/path/to/saved_model.pt" >&2
+    exit 1
+  fi
+  CMD+=(--skip-train --checkpoint "${CHECKPOINT}")
+fi
+
 echo "============================================================"
 echo "JetClass part0 baseline + shift-correlation run"
 echo "Run dir: ${RUN_DIR}"
@@ -155,6 +165,10 @@ echo "Seed: ${SEED}"
 echo "Epochs: ${EPOCHS}"
 echo "Train/Val/Test targets: ${TRAIN_JETS_PER_EPOCH} / ${VAL_JETS_PER_EPOCH} / ${MAX_TEST_JETS}"
 echo "GPU arg: ${GPUS}, Device: ${DEVICE}"
+echo "Skip train: ${SKIP_TRAIN}"
+if [[ "${SKIP_TRAIN}" == "1" ]]; then
+  echo "Checkpoint: ${CHECKPOINT}"
+fi
 echo "Conda env: ${CONDA_ENV}"
 echo "============================================================"
 echo

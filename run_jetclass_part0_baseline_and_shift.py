@@ -193,15 +193,11 @@ def build_weaver_command(
     for cls in CLASS_NAMES:
         cmd.append(f"{cls}:{split_paths['train']}/{cls}_*.root")
 
-    cmd.extend(
-        [
-            "--data-val",
-            f"{split_paths['val']}/*.root",
-            "--data-test",
-        ]
-    )
-    for cls in CLASS_NAMES:
-        cmd.append(f"{cls}:{split_paths['test']}/{cls}_*.root")
+    cmd.extend(["--data-val", f"{split_paths['val']}/*.root"])
+    if args.include_weaver_test:
+        cmd.append("--data-test")
+        for cls in CLASS_NAMES:
+            cmd.append(f"{cls}:{split_paths['test']}/{cls}_*.root")
 
     model_prefix = Path(args.output_dir) / "training" / "net"
     model_prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -272,8 +268,14 @@ def _delta_phi(phi1: ak.Array, phi2: ak.Array) -> ak.Array:
     return (dphi + np.pi) % (2.0 * np.pi) - np.pi
 
 
+def _has_field(table: ak.Array, key: str) -> bool:
+    # uproot returns an awkward record array; membership must use table.fields,
+    # not `"key" in table`, which triggers element-wise comparisons.
+    return key in set(getattr(table, "fields", []))
+
+
 def _get_or_zeros(table: Dict[str, ak.Array], key: str, ref: ak.Array) -> ak.Array:
-    if key in table:
+    if _has_field(table, key):
         return table[key]
     return ak.zeros_like(ref)
 
@@ -300,8 +302,8 @@ def _build_features(
     jet_phi = table["jet_phi"]
     jet_energy = table["jet_energy"]
 
-    part_deta = table["part_deta"] if "part_deta" in table else (part_eta - jet_eta)
-    part_dphi = table["part_dphi"] if "part_dphi" in table else _delta_phi(part_phi, jet_phi)
+    part_deta = table["part_deta"] if _has_field(table, "part_deta") else (part_eta - jet_eta)
+    part_dphi = table["part_dphi"] if _has_field(table, "part_dphi") else _delta_phi(part_phi, jet_phi)
     part_deltaR = np.hypot(part_deta, part_dphi)
 
     part_pt_log = np.log(np.clip(part_pt, eps, None))
@@ -465,6 +467,17 @@ def concat_inputs(chunks: Sequence[InputArrays], max_jets: int = -1) -> InputArr
     )
 
 
+def slice_inputs(inputs: InputArrays, n: int) -> InputArrays:
+    return InputArrays(
+        points=inputs.points[:n],
+        features=inputs.features[:n],
+        vectors=inputs.vectors[:n],
+        mask=inputs.mask[:n],
+        y_onehot=inputs.y_onehot[:n],
+        y_index=inputs.y_index[:n],
+    )
+
+
 def load_split(
     files: Sequence[Path],
     feature_set: str,
@@ -472,13 +485,17 @@ def load_split(
     max_jets: int,
 ) -> InputArrays:
     chunks: List[InputArrays] = []
-    total = 0
+    per_file_cap = -1
+    if max_jets > 0 and len(files) > 0:
+        # Keep class coverage when test files are class-partitioned.
+        per_file_cap = int(math.ceil(max_jets / len(files)))
+
     for fpath in files:
         chunk = read_root_file(fpath, feature_set=feature_set, max_num_particles=max_num_particles)
+        if per_file_cap > 0 and len(chunk.y_index) > per_file_cap:
+            chunk = slice_inputs(chunk, per_file_cap)
         chunks.append(chunk)
-        total += len(chunk.y_index)
-        if max_jets > 0 and total >= max_jets:
-            break
+
     merged = concat_inputs(chunks, max_jets=max_jets)
     return merged
 
@@ -809,6 +826,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpus", default="0")
     parser.add_argument("--tensorboard-name", default="JetClass_part0_ParT_baseline")
     parser.add_argument("--extra-weaver-args", default="")
+    parser.add_argument(
+        "--include-weaver-test",
+        action="store_true",
+        help="If set, pass --data-test to weaver during training. "
+        "Disabled by default because post-training evaluation is handled by this script.",
+    )
     parser.add_argument("--skip-train", action="store_true")
     parser.add_argument("--checkpoint", default="")
 
@@ -919,6 +942,14 @@ def main() -> int:
         max_jets=args.max_test_jets,
     )
     print(f"Loaded {len(clean_inputs.y_index)} test jets for evaluation.")
+    uniq, counts = np.unique(clean_inputs.y_index, return_counts=True)
+    class_counts = {LABEL_NAMES[int(k)]: int(v) for k, v in zip(uniq, counts)}
+    print(f"Test label distribution: {class_counts}")
+    if len(uniq) < 2:
+        raise RuntimeError(
+            "Loaded test sample has fewer than 2 classes; AUC/correlation metrics are not meaningful. "
+            "Check split indices and input labels."
+        )
 
     model = build_model(
         feature_set=args.feature_set,
