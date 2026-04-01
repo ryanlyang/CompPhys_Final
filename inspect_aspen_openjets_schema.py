@@ -11,7 +11,7 @@ import argparse
 import csv
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -29,6 +29,7 @@ class DatasetEntry:
     path: str
     shape: Tuple[int, ...]
     dtype: str
+    fields: Tuple[str, ...]
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,12 +71,14 @@ def collect_entries(file_path: Path) -> List[DatasetEntry]:
     with h5py.File(file_path, "r") as f:
         def visitor(name: str, obj) -> None:
             if isinstance(obj, h5py.Dataset):
+                fields: Tuple[str, ...] = tuple(obj.dtype.names) if obj.dtype.names else tuple()
                 out.append(
                     DatasetEntry(
                         file=file_path.name,
                         path=name,
                         shape=tuple(obj.shape),
                         dtype=str(obj.dtype),
+                        fields=fields,
                     )
                 )
         f.visititems(visitor)
@@ -177,6 +180,29 @@ def summarize_shapes(entries: Sequence[DatasetEntry]) -> Dict[str, object]:
     }
 
 
+def _resolve_dataset_view(f, key: str):
+    # Direct dataset path
+    if key in f and isinstance(f[key], h5py.Dataset):
+        return f[key]
+
+    # Structured field syntax: "<dataset_path>.<field>"
+    if "." in key:
+        ds_path, field = key.rsplit(".", 1)
+        if ds_path in f and isinstance(f[ds_path], h5py.Dataset):
+            ds = f[ds_path]
+            if ds.dtype.names and field in ds.dtype.names:
+                return ds[field]
+
+    # Structured field syntax: "<dataset_path>/<field>"
+    if "/" in key:
+        ds_path, field = key.rsplit("/", 1)
+        if ds_path in f and isinstance(f[ds_path], h5py.Dataset):
+            ds = f[ds_path]
+            if ds.dtype.names and field in ds.dtype.names:
+                return ds[field]
+    return None
+
+
 def lightweight_value_checks(
     file_path: Path,
     key_paths: Sequence[str],
@@ -187,7 +213,10 @@ def lightweight_value_checks(
         for key in key_paths:
             if not key:
                 continue
-            ds = f[key]
+            ds = _resolve_dataset_view(f, key)
+            if ds is None:
+                checks[key] = {"missing_in_file": True}
+                continue
             if ds.size == 0:
                 checks[key] = {"size": int(ds.size), "empty": True}
                 continue
@@ -272,7 +301,7 @@ def readiness(mapping: Dict[str, Dict[str, object]]) -> Dict[str, object]:
 def write_key_table(entries: Sequence[DatasetEntry], out_csv: Path) -> None:
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["file", "path", "shape", "dtype"])
+        writer = csv.DictWriter(f, fieldnames=["file", "path", "shape", "dtype", "fields"])
         writer.writeheader()
         for e in entries:
             writer.writerow(
@@ -281,6 +310,7 @@ def write_key_table(entries: Sequence[DatasetEntry], out_csv: Path) -> None:
                     "path": e.path,
                     "shape": str(e.shape),
                     "dtype": e.dtype,
+                    "fields": "|".join(e.fields),
                 }
             )
 
@@ -306,7 +336,16 @@ def main() -> int:
     if not all_entries:
         raise RuntimeError(f"No datasets found inside scanned files: {[f.name for f in files]}")
 
-    unique_paths = sorted(set(e.path for e in all_entries))
+    candidate_keys: List[str] = []
+    for e in all_entries:
+        candidate_keys.append(e.path)
+        candidate_keys.append(e.path.split("/")[-1])
+        for fld in e.fields:
+            candidate_keys.append(fld)
+            candidate_keys.append(f"{e.path}.{fld}")
+            candidate_keys.append(f"{e.path}/{fld}")
+
+    unique_paths = sorted(set(candidate_keys))
     mapping = detect_mapping(unique_paths)
     ready = readiness(mapping)
     shape_summary = summarize_shapes(all_entries)
@@ -319,7 +358,8 @@ def main() -> int:
         "aspen_dir": str(aspen_dir),
         "files_scanned": [str(f) for f in files],
         "num_dataset_entries": len(all_entries),
-        "num_unique_dataset_paths": len(unique_paths),
+        "num_unique_dataset_paths": len(set(e.path for e in all_entries)),
+        "num_unique_candidate_keys": len(unique_paths),
         "shape_summary": shape_summary,
         "mapping_candidates": mapping,
         "readiness": ready,
