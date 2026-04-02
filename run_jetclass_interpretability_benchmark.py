@@ -28,6 +28,7 @@ except ModuleNotFoundError:
     torch = None
 
 from run_jetclass_part0_baseline_and_shift import (
+    CLASS_NAMES,
     InputArrays,
     LABEL_NAMES,
     best_permutation_accuracy,
@@ -129,6 +130,22 @@ def _forward_probs(
     features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
     vectors = torch.nan_to_num(vectors, nan=0.0, posinf=0.0, neginf=0.0)
     mask = torch.nan_to_num(mask, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+    empty = (mask.sum(dim=2) <= 0).squeeze(1)
+    if bool(empty.any().item()):
+        mask = mask.clone()
+        points = points.clone()
+        features = features.clone()
+        vectors = vectors.clone()
+        idx = torch.where(empty)[0]
+        vec_nonzero = (vectors[idx].abs().sum(dim=1) > 0).to(mask.dtype)
+        mask[idx, 0, :] = vec_nonzero
+        still_empty = (mask[idx].sum(dim=2) <= 0).squeeze(1)
+        if bool(still_empty.any().item()):
+            idx2 = idx[still_empty]
+            mask[idx2, 0, 0] = 1.0
+            points[idx2, :, 0] = 0.0
+            features[idx2, :, 0] = 0.0
+            vectors[idx2, :, 0] = 0.0
     out = model(points, features, vectors, mask)
     if not torch.isfinite(out).all():
         out = torch.nan_to_num(out, nan=0.0, posinf=50.0, neginf=-50.0)
@@ -542,6 +559,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True, help="Path to saved_model.pt")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--feature-set", default="kinpid", choices=["kin", "kinpid", "full"])
+    parser.add_argument(
+        "--label-source",
+        default="filename",
+        choices=["filename", "branch"],
+        help=(
+            "How to derive class labels for evaluation. "
+            "`filename` matches the class indexing used by the training command in this project."
+        ),
+    )
     parser.add_argument("--device", default="cuda")
 
     parser.add_argument("--max-num-particles", type=int, default=128)
@@ -613,8 +639,11 @@ def main() -> int:
         feature_set=args.feature_set,
         max_num_particles=args.max_num_particles,
         max_jets=args.max_eval_jets,
+        label_source=args.label_source,
     )
     print(f"Loaded {len(eval_inputs.y_index)} evaluation jets.")
+    class_names = CLASS_NAMES if args.label_source == "filename" else LABEL_NAMES
+    n_classes = len(class_names)
 
     explain_n = len(eval_inputs.y_index)
     if args.max_explain_jets > 0:
@@ -628,7 +657,7 @@ def main() -> int:
     explain_inputs = subset_inputs_by_indices(eval_inputs, explain_idx)
     print(f"Using {len(explain_inputs.y_index)} jets for attribution benchmarking.")
     uniq_e, cnt_e = np.unique(explain_inputs.y_index, return_counts=True)
-    explain_label_dist = {LABEL_NAMES[int(k)]: int(v) for k, v in zip(uniq_e, cnt_e)}
+    explain_label_dist = {class_names[int(k)]: int(v) for k, v in zip(uniq_e, cnt_e)}
     print(f"Explain subset label distribution: {explain_label_dist}")
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -637,7 +666,7 @@ def main() -> int:
 
     model = build_model(
         feature_set=args.feature_set,
-        num_classes=len(LABEL_NAMES),
+        num_classes=n_classes,
         checkpoint_path=checkpoint,
         device=device,
     )
@@ -647,14 +676,14 @@ def main() -> int:
     clean_perm_eval = best_permutation_accuracy(
         y_true=eval_inputs.y_index,
         y_pred=clean_probs_eval.argmax(axis=1),
-        n_classes=len(LABEL_NAMES),
+        n_classes=n_classes,
     )
     clean_probs = clean_probs_eval[:explain_n]
     clean_metrics = compute_supervised_metrics(explain_inputs, clean_probs)
     clean_perm_explain = best_permutation_accuracy(
         y_true=explain_inputs.y_index,
         y_pred=clean_probs.argmax(axis=1),
-        n_classes=len(LABEL_NAMES),
+        n_classes=n_classes,
     )
     clean_pred = clean_probs.argmax(axis=1)
 
@@ -745,6 +774,8 @@ def main() -> int:
         "checkpoint": str(checkpoint),
         "dataset_dir": str(dataset_dir),
         "feature_set": args.feature_set,
+        "label_source": args.label_source,
+        "class_names": class_names,
         "target_mode": args.target_mode,
         "methods": methods,
         "mask_fractions": mask_fractions,

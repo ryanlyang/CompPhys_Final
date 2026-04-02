@@ -73,6 +73,8 @@ CLASS_NAMES = [
     "ZJetsToNuNu",
 ]
 
+CLASS_TO_TRAIN_INDEX = {name: i for i, name in enumerate(CLASS_NAMES)}
+
 LABEL_NAMES = [
     "label_QCD",
     "label_Hbb",
@@ -110,6 +112,35 @@ class ParticleTransformerWrapper(torch.nn.Module):
 
     def forward(self, points, features, lorentz_vectors, mask):
         return self.mod(features, v=lorentz_vectors, mask=mask)
+
+
+def _ensure_nonempty_mask_np(
+    points: np.ndarray,
+    features: np.ndarray,
+    vectors: np.ndarray,
+    mask: np.ndarray,
+) -> Tuple[np.ndarray, int]:
+    # Ensure each jet has at least one active constituent. All-masked jets can
+    # trigger NaNs inside attention blocks.
+    active = mask[:, 0, :].sum(axis=1)
+    empty = active <= 0
+    n_empty = int(empty.sum())
+    if n_empty == 0:
+        return mask, 0
+
+    out = mask.copy()
+    idx = np.flatnonzero(empty)
+    for i in idx.tolist():
+        # Try to infer valid particles from non-zero 4-vectors.
+        nonzero = (np.abs(vectors[i]).sum(axis=0) > 0).astype(np.float32)
+        if float(nonzero.sum()) > 0:
+            out[i, 0, :] = nonzero
+        else:
+            out[i, 0, 0] = 1.0
+            points[i, :, 0] = 0.0
+            features[i, :, 0] = 0.0
+            vectors[i, :, 0] = 0.0
+    return out, n_empty
 
 
 def parse_index_spec(spec: str) -> List[int]:
@@ -546,6 +577,7 @@ def read_root_file(
     filepath: Path,
     feature_set: str,
     max_num_particles: int,
+    label_source: str,
 ) -> InputArrays:
     import uproot
 
@@ -559,9 +591,10 @@ def read_root_file(
             "jet_eta",
             "jet_phi",
             "jet_energy",
-            *LABEL_NAMES,
         ]
     )
+    if label_source == "branch":
+        required.update(LABEL_NAMES)
     optional = set(
         [
             "part_deta",
@@ -592,8 +625,29 @@ def read_root_file(
     x_features = _stack_group(pf_features, transforms["pf_features"], max_num_particles)
     x_vectors = _stack_group(pf_vectors, transforms["pf_vectors"], max_num_particles)
     x_mask = _stack_group(pf_mask, transforms["pf_mask"], max_num_particles)
-    y_onehot = np.stack([ak.to_numpy(table[n]).astype(np.int64) for n in LABEL_NAMES], axis=1)
-    y_index = y_onehot.argmax(axis=1)
+    x_mask, n_empty = _ensure_nonempty_mask_np(x_points, x_features, x_vectors, x_mask)
+    if n_empty > 0:
+        print(
+            f"Warning: repaired {n_empty} all-masked jets while reading {filepath.name}.",
+            file=sys.stderr,
+        )
+    n_events = int(x_points.shape[0])
+    if label_source == "branch":
+        y_onehot = np.stack([ak.to_numpy(table[n]).astype(np.int64) for n in LABEL_NAMES], axis=1)
+        y_index = y_onehot.argmax(axis=1)
+    elif label_source == "filename":
+        cls_name = filepath.name.split("_", 1)[0]
+        if cls_name not in CLASS_TO_TRAIN_INDEX:
+            raise ValueError(
+                f"Cannot infer class from filename '{filepath.name}'. "
+                f"Expected prefix in {sorted(CLASS_TO_TRAIN_INDEX)}"
+            )
+        cls_idx = CLASS_TO_TRAIN_INDEX[cls_name]
+        y_index = np.full(n_events, cls_idx, dtype=np.int64)
+        y_onehot = np.zeros((n_events, len(CLASS_NAMES)), dtype=np.int64)
+        y_onehot[np.arange(n_events), y_index] = 1
+    else:
+        raise ValueError(f"Unsupported label_source '{label_source}'")
     return InputArrays(
         points=x_points,
         features=x_features,
@@ -646,6 +700,7 @@ def load_split(
     feature_set: str,
     max_num_particles: int,
     max_jets: int,
+    label_source: str,
 ) -> InputArrays:
     chunks: List[InputArrays] = []
     per_file_cap = -1
@@ -654,7 +709,12 @@ def load_split(
         per_file_cap = int(math.ceil(max_jets / len(files)))
 
     for fpath in files:
-        chunk = read_root_file(fpath, feature_set=feature_set, max_num_particles=max_num_particles)
+        chunk = read_root_file(
+            fpath,
+            feature_set=feature_set,
+            max_num_particles=max_num_particles,
+            label_source=label_source,
+        )
         if per_file_cap > 0 and len(chunk.y_index) > per_file_cap:
             chunk = slice_inputs(chunk, per_file_cap)
         chunks.append(chunk)
@@ -711,6 +771,23 @@ def predict_probs(
             features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
             vectors = torch.nan_to_num(vectors, nan=0.0, posinf=0.0, neginf=0.0)
             mask = torch.nan_to_num(mask, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+            empty = (mask.sum(dim=2) <= 0).squeeze(1)
+            if bool(empty.any().item()):
+                mask = mask.clone()
+                points = points.clone()
+                features = features.clone()
+                vectors = vectors.clone()
+                idx = torch.where(empty)[0]
+                # First try to infer from non-zero vectors.
+                vec_nonzero = (vectors[idx].abs().sum(dim=1) > 0).to(mask.dtype)
+                mask[idx, 0, :] = vec_nonzero
+                still_empty = (mask[idx].sum(dim=2) <= 0).squeeze(1)
+                if bool(still_empty.any().item()):
+                    idx2 = idx[still_empty]
+                    mask[idx2, 0, 0] = 1.0
+                    points[idx2, :, 0] = 0.0
+                    features[idx2, :, 0] = 0.0
+                    vectors[idx2, :, 0] = 0.0
             pred = model(points, features, vectors, mask)
             pred = pred.detach().cpu().numpy()
             outs.append(pred)
@@ -1023,6 +1100,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", required=True, help="Flat dir with class ROOT files.")
     parser.add_argument("--output-dir", required=True, help="Output directory.")
     parser.add_argument("--feature-set", default="kin", choices=["kin", "kinpid", "full"])
+    parser.add_argument(
+        "--label-source",
+        default="filename",
+        choices=["filename", "branch"],
+        help=(
+            "How to derive class labels for evaluation. "
+            "`filename` matches the class indexing used by the weaver command in this script; "
+            "`branch` reads label_* branches from ROOT."
+        ),
+    )
     parser.add_argument("--max-num-particles", type=int, default=128)
 
     parser.add_argument("--train-indices", default="0-7")
@@ -1104,6 +1191,7 @@ def main() -> int:
             {
                 "dataset_dir": str(dataset_dir),
                 "feature_set": args.feature_set,
+                "label_source": args.label_source,
                 "train_indices": train_indices,
                 "val_indices": val_indices,
                 "test_indices": test_indices,
@@ -1153,10 +1241,12 @@ def main() -> int:
         feature_set=args.feature_set,
         max_num_particles=args.max_num_particles,
         max_jets=args.max_test_jets,
+        label_source=args.label_source,
     )
     print(f"Loaded {len(clean_inputs.y_index)} test jets for evaluation.")
+    class_names = CLASS_NAMES if args.label_source == "filename" else LABEL_NAMES
     uniq, counts = np.unique(clean_inputs.y_index, return_counts=True)
-    class_counts = {LABEL_NAMES[int(k)]: int(v) for k, v in zip(uniq, counts)}
+    class_counts = {class_names[int(k)]: int(v) for k, v in zip(uniq, counts)}
     print(f"Test label distribution: {class_counts}")
     if len(uniq) < 2:
         raise RuntimeError(
@@ -1164,9 +1254,10 @@ def main() -> int:
             "Check split indices and input labels."
         )
 
+    n_classes = len(class_names)
     model = build_model(
         feature_set=args.feature_set,
-        num_classes=len(LABEL_NAMES),
+        num_classes=n_classes,
         checkpoint_path=checkpoint_path,
         device=device,
     )
@@ -1177,9 +1268,9 @@ def main() -> int:
     clean_class_prob_dist = clean_probs.mean(axis=0)
     clean_top1 = clean_probs.argmax(axis=1)
     perm_diag = best_permutation_accuracy(
-        y_true=clean_inputs.y_index, y_pred=clean_top1, n_classes=len(LABEL_NAMES)
+        y_true=clean_inputs.y_index, y_pred=clean_top1, n_classes=n_classes
     )
-    clean_top1_frac = np.bincount(clean_top1, minlength=len(LABEL_NAMES)).astype(np.float64)
+    clean_top1_frac = np.bincount(clean_top1, minlength=n_classes).astype(np.float64)
     clean_top1_frac = clean_top1_frac / np.clip(clean_top1_frac.sum(), 1e-12, None)
     if np.isfinite(float(perm_diag.get("best_permutation_accuracy", float("nan")))):
         print(
@@ -1199,12 +1290,14 @@ def main() -> int:
     )
 
     summary = {
+        "label_source": args.label_source,
+        "class_names": class_names,
         "clean_metrics": clean_metrics,
         "clean_pred_class_distribution": {
-            LABEL_NAMES[i]: float(clean_class_prob_dist[i]) for i in range(len(LABEL_NAMES))
+            class_names[i]: float(clean_class_prob_dist[i]) for i in range(len(class_names))
         },
         "clean_top1_fraction": {
-            LABEL_NAMES[i]: float(clean_top1_frac[i]) for i in range(len(LABEL_NAMES))
+            class_names[i]: float(clean_top1_frac[i]) for i in range(len(class_names))
         },
         "label_order_permutation_diagnostic": perm_diag,
         "top_correlations_by_spearman_auc_drop": summarize_top_correlations(corr_rows),
