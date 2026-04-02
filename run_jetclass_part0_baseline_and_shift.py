@@ -46,6 +46,11 @@ try:
 except ModuleNotFoundError:
     uproot = None
 
+try:
+    import yaml
+except ModuleNotFoundError:
+    yaml = None
+
 if vector is not None and ak is not None:
     vector.register_awkward()
 
@@ -78,6 +83,7 @@ LABEL_NAMES = [
 
 FEATURE_DIMS = {"kin": 7, "kinpid": 13, "full": 17}
 CORRUPTION_TYPES = ("gaussian_noise", "dropout", "masking", "eta_phi_jitter")
+_INPUT_TRANSFORM_CACHE: Dict[str, Dict[str, List[Tuple[str, float | None, float, float | None, float | None]]]] = {}
 
 
 @dataclass
@@ -286,6 +292,66 @@ def _clip_min_jagged(x: ak.Array, min_value: float) -> ak.Array:
     return ak.where(x < min_value, min_value, x)
 
 
+def _clip_max_jagged(x: ak.Array, max_value: float) -> ak.Array:
+    return ak.where(x > max_value, max_value, x)
+
+
+def _parse_var_spec(item) -> Tuple[str, float | None, float, float | None, float | None]:
+    # [name, subtract, multiply, clip_min, clip_max, ...]
+    if isinstance(item, str):
+        return item, None, 1.0, -5.0, 5.0
+    if not isinstance(item, (list, tuple)) or len(item) < 1:
+        raise ValueError(f"Invalid variable spec: {item}")
+    name = str(item[0])
+    sub = None if len(item) < 2 or item[1] is None else float(item[1])
+    mul = 1.0 if len(item) < 3 or item[2] is None else float(item[2])
+    cmin = -5.0 if len(item) < 4 or item[3] is None else float(item[3])
+    cmax = 5.0 if len(item) < 5 or item[4] is None else float(item[4])
+    return name, sub, mul, cmin, cmax
+
+
+def _load_input_transforms(
+    feature_set: str,
+) -> Dict[str, List[Tuple[str, float | None, float, float | None, float | None]]]:
+    cached = _INPUT_TRANSFORM_CACHE.get(feature_set)
+    if cached is not None:
+        return cached
+    if yaml is None:
+        raise RuntimeError("Missing dependency: PyYAML (yaml).")
+
+    cfg_path = Path(__file__).resolve().parent / "data" / "JetClass" / f"JetClass_{feature_set}.yaml"
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"JetClass data config not found: {cfg_path}")
+    cfg = yaml.safe_load(cfg_path.read_text())
+    inputs_cfg = cfg.get("inputs", {})
+
+    out: Dict[str, List[Tuple[str, float | None, float, float | None, float | None]]] = {}
+    for group in ("pf_points", "pf_features", "pf_vectors", "pf_mask"):
+        var_specs = inputs_cfg.get(group, {}).get("vars", [])
+        out[group] = [_parse_var_spec(v) for v in var_specs]
+    _INPUT_TRANSFORM_CACHE[feature_set] = out
+    return out
+
+
+def _apply_input_transform(
+    x: ak.Array,
+    subtract_by: float | None,
+    multiply_by: float,
+    clip_min: float | None,
+    clip_max: float | None,
+) -> ak.Array:
+    y = x
+    if subtract_by is not None:
+        y = y - subtract_by
+    if multiply_by != 1.0:
+        y = y * multiply_by
+    if clip_min is not None:
+        y = _clip_min_jagged(y, clip_min)
+    if clip_max is not None:
+        y = _clip_max_jagged(y, clip_max)
+    return y
+
+
 def _build_features(
     table: Dict[str, ak.Array],
     feature_set: str,
@@ -323,62 +389,57 @@ def _build_features(
     part_logptrel = np.log(_clip_min_jagged(part_pt / jet_pt_safe, eps))
     part_logerel = np.log(_clip_min_jagged(part_energy / jet_energy_safe, eps))
 
-    # Common representation used by repo configs.
-    pf_points = [part_deta, part_dphi]
-    pf_vectors = [table["part_px"], table["part_py"], table["part_pz"], table["part_energy"]]
-    pf_mask = [ak.ones_like(table["part_energy"])]
+    part_charge = _get_or_zeros(table, "part_charge", table["part_energy"])
+    part_is_ch = _get_or_zeros(table, "part_isChargedHadron", table["part_energy"])
+    part_is_nh = _get_or_zeros(table, "part_isNeutralHadron", table["part_energy"])
+    part_is_ph = _get_or_zeros(table, "part_isPhoton", table["part_energy"])
+    part_is_el = _get_or_zeros(table, "part_isElectron", table["part_energy"])
+    part_is_mu = _get_or_zeros(table, "part_isMuon", table["part_energy"])
+    part_d0 = np.tanh(_get_or_zeros(table, "part_d0val", table["part_energy"]))
+    part_d0err = _get_or_zeros(table, "part_d0err", table["part_energy"])
+    part_dz = np.tanh(_get_or_zeros(table, "part_dzval", table["part_energy"]))
+    part_dzerr = _get_or_zeros(table, "part_dzerr", table["part_energy"])
+    part_mask = ak.ones_like(table["part_energy"])
 
-    if feature_set == "kin":
-        pf_features = [
-            part_pt_log,
-            part_e_log,
-            part_logptrel,
-            part_logerel,
-            part_deltaR,
-            part_deta,
-            part_dphi,
-        ]
-    elif feature_set == "kinpid":
-        pf_features = [
-            part_pt_log,
-            part_e_log,
-            part_logptrel,
-            part_logerel,
-            part_deltaR,
-            _get_or_zeros(table, "part_charge", table["part_energy"]),
-            _get_or_zeros(table, "part_isChargedHadron", table["part_energy"]),
-            _get_or_zeros(table, "part_isNeutralHadron", table["part_energy"]),
-            _get_or_zeros(table, "part_isPhoton", table["part_energy"]),
-            _get_or_zeros(table, "part_isElectron", table["part_energy"]),
-            _get_or_zeros(table, "part_isMuon", table["part_energy"]),
-            part_deta,
-            part_dphi,
-        ]
-    elif feature_set == "full":
-        part_d0 = np.tanh(_get_or_zeros(table, "part_d0val", table["part_energy"]))
-        part_dz = np.tanh(_get_or_zeros(table, "part_dzval", table["part_energy"]))
-        pf_features = [
-            part_pt_log,
-            part_e_log,
-            part_logptrel,
-            part_logerel,
-            part_deltaR,
-            _get_or_zeros(table, "part_charge", table["part_energy"]),
-            _get_or_zeros(table, "part_isChargedHadron", table["part_energy"]),
-            _get_or_zeros(table, "part_isNeutralHadron", table["part_energy"]),
-            _get_or_zeros(table, "part_isPhoton", table["part_energy"]),
-            _get_or_zeros(table, "part_isElectron", table["part_energy"]),
-            _get_or_zeros(table, "part_isMuon", table["part_energy"]),
-            part_d0,
-            _get_or_zeros(table, "part_d0err", table["part_energy"]),
-            part_dz,
-            _get_or_zeros(table, "part_dzerr", table["part_energy"]),
-            part_deta,
-            part_dphi,
-        ]
-    else:
-        raise ValueError(f"Unsupported feature_set '{feature_set}'")
+    var_map: Dict[str, ak.Array] = {
+        "part_deta": part_deta,
+        "part_dphi": part_dphi,
+        "part_pt_log": part_pt_log,
+        "part_e_log": part_e_log,
+        "part_logptrel": part_logptrel,
+        "part_logerel": part_logerel,
+        "part_deltaR": part_deltaR,
+        "part_charge": part_charge,
+        "part_isChargedHadron": part_is_ch,
+        "part_isNeutralHadron": part_is_nh,
+        "part_isPhoton": part_is_ph,
+        "part_isElectron": part_is_el,
+        "part_isMuon": part_is_mu,
+        "part_d0": part_d0,
+        "part_d0err": part_d0err,
+        "part_dz": part_dz,
+        "part_dzerr": part_dzerr,
+        "part_px": table["part_px"],
+        "part_py": table["part_py"],
+        "part_pz": table["part_pz"],
+        "part_energy": table["part_energy"],
+        "part_mask": part_mask,
+    }
 
+    transforms = _load_input_transforms(feature_set)
+
+    def _assemble(group: str) -> List[ak.Array]:
+        arrs: List[ak.Array] = []
+        for name, sub, mul, cmin, cmax in transforms[group]:
+            if name not in var_map:
+                raise KeyError(f"Variable '{name}' required by config missing in var_map")
+            arrs.append(_apply_input_transform(var_map[name], sub, mul, cmin, cmax))
+        return arrs
+
+    pf_points = _assemble("pf_points")
+    pf_features = _assemble("pf_features")
+    pf_vectors = _assemble("pf_vectors")
+    pf_mask = _assemble("pf_mask")
     return pf_points, pf_features, pf_vectors, pf_mask
 
 
@@ -555,8 +616,21 @@ def predict_probs(
             pred = model(points, features, vectors, mask)
             pred = pred.detach().cpu().numpy()
             outs.append(pred)
-    probs = np.concatenate(outs, axis=0)
-    probs = probs / np.clip(probs.sum(axis=1, keepdims=True), 1e-12, None)
+    raw = np.concatenate(outs, axis=0)
+    # If model output already looks like probabilities, keep it; otherwise
+    # apply softmax as logits->prob conversion.
+    row_sum = raw.sum(axis=1, keepdims=True)
+    looks_like_prob = bool(
+        np.all(raw >= -1e-6)
+        and np.all(np.isfinite(raw))
+        and np.all(np.abs(row_sum - 1.0) < 1e-3)
+    )
+    if looks_like_prob:
+        probs = raw
+    else:
+        x = raw - np.max(raw, axis=1, keepdims=True)
+        ex = np.exp(x)
+        probs = ex / np.clip(ex.sum(axis=1, keepdims=True), 1e-12, None)
     return probs
 
 
