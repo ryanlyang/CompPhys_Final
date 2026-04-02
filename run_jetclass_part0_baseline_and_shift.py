@@ -280,6 +280,12 @@ def _get_or_zeros(table: Dict[str, ak.Array], key: str, ref: ak.Array) -> ak.Arr
     return ak.zeros_like(ref)
 
 
+def _clip_min_jagged(x: ak.Array, min_value: float) -> ak.Array:
+    # Avoid np.clip on jagged awkward arrays; older awkward versions try to
+    # convert to regular arrays and crash.
+    return ak.where(x < min_value, min_value, x)
+
+
 def _build_features(
     table: Dict[str, ak.Array],
     feature_set: str,
@@ -306,12 +312,16 @@ def _build_features(
     part_dphi = table["part_dphi"] if _has_field(table, "part_dphi") else _delta_phi(part_phi, jet_phi)
     part_deltaR = np.hypot(part_deta, part_dphi)
 
-    part_pt_log = np.log(np.clip(part_pt, eps, None))
-    part_e_log = np.log(np.clip(table["part_energy"], eps, None))
-    part_logptrel = np.log(np.clip(part_pt / np.clip(jet_pt, eps, None), eps, None))
-    part_logerel = np.log(
-        np.clip(table["part_energy"] / np.clip(jet_energy, eps, None), eps, None)
-    )
+    part_energy = table["part_energy"]
+    part_pt_safe = _clip_min_jagged(part_pt, eps)
+    part_energy_safe = _clip_min_jagged(part_energy, eps)
+    jet_pt_safe = _clip_min_jagged(jet_pt, eps)
+    jet_energy_safe = _clip_min_jagged(jet_energy, eps)
+
+    part_pt_log = np.log(part_pt_safe)
+    part_e_log = np.log(part_energy_safe)
+    part_logptrel = np.log(_clip_min_jagged(part_pt / jet_pt_safe, eps))
+    part_logerel = np.log(_clip_min_jagged(part_energy / jet_energy_safe, eps))
 
     # Common representation used by repo configs.
     pf_points = [part_deta, part_dphi]
