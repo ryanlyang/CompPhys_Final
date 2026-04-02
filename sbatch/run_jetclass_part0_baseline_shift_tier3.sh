@@ -13,7 +13,7 @@ set -euo pipefail
 # ---- User-tunable defaults ----
 CONDA_ENV="${CONDA_ENV:-atlas_kd}"
 DATASET_DIR="${DATASET_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part0}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-/home/ryreu/atlas/PracticeTagging/runs/jetclass_part0_shiftstudy}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/home/ryreu/atlas/CompPhys_Final/runs/jetclass_part0_shiftstudy}"
 FEATURE_SET="${FEATURE_SET:-kinpid}"           # kin | kinpid | full
 SEED="${SEED:-1}"
 RUN_TAG="${RUN_TAG:-part0_${FEATURE_SET}_seed${SEED}}"
@@ -48,9 +48,9 @@ JITTER_LEVELS="${JITTER_LEVELS:-0.01,0.03,0.05,0.1}"
 
 # Set AUTO_INSTALL_DEPS=1 to install missing packages into current env.
 AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-0}"
-# Set MIRROR_TO_SLURM_STDIO=1 if you also want runtime logs mirrored to Slurm
-# stdout/stderr files. Default keeps logs only in LOG_DIR files.
-MIRROR_TO_SLURM_STDIO="${MIRROR_TO_SLURM_STDIO:-0}"
+# Set MIRROR_TO_SLURM_STDIO=0 to disable runtime mirroring to Slurm stdout/stderr.
+# Default keeps logs in LOG_DIR and also mirrors to Slurm for easier debugging.
+MIRROR_TO_SLURM_STDIO="${MIRROR_TO_SLURM_STDIO:-1}"
 
 set +u
 source ~/.bashrc
@@ -71,6 +71,12 @@ LOG_DIR="${LOG_ROOT}/${RUN_TAG}"
 STDOUT_LOG="${LOG_DIR}/job${JOB_ID}.out"
 STDERR_LOG="${LOG_DIR}/job${JOB_ID}.err"
 mkdir -p "${RUN_DIR}" "${LOG_DIR}"
+
+# Print deterministic log locations early (before stdio redirection) so they
+# are always visible in Slurm's own stdout/stderr files.
+echo "RUNTIME_LOG_STDOUT=${STDOUT_LOG}"
+echo "RUNTIME_LOG_STDERR=${STDERR_LOG}"
+echo "RUNTIME_RUN_DIR=${RUN_DIR}"
 
 # Route all script logs to a stable folder. By default do not mirror runtime
 # logs back to Slurm stdout/stderr (to avoid clutter in submit directory logs).

@@ -961,6 +961,10 @@ def main() -> int:
         model=model, inputs=clean_inputs, batch_size=args.eval_batch_size, device=device
     )
     clean_metrics = compute_supervised_metrics(clean_inputs, clean_probs)
+    clean_class_prob_dist = clean_probs.mean(axis=0)
+    clean_top1 = clean_probs.argmax(axis=1)
+    clean_top1_frac = np.bincount(clean_top1, minlength=len(LABEL_NAMES)).astype(np.float64)
+    clean_top1_frac = clean_top1_frac / np.clip(clean_top1_frac.sum(), 1e-12, None)
 
     corruption_rows, corr_rows = run_corruption_study(
         model=model,
@@ -973,6 +977,12 @@ def main() -> int:
 
     summary = {
         "clean_metrics": clean_metrics,
+        "clean_pred_class_distribution": {
+            LABEL_NAMES[i]: float(clean_class_prob_dist[i]) for i in range(len(LABEL_NAMES))
+        },
+        "clean_top1_fraction": {
+            LABEL_NAMES[i]: float(clean_top1_frac[i]) for i in range(len(LABEL_NAMES))
+        },
         "top_correlations_by_spearman_auc_drop": summarize_top_correlations(corr_rows),
         "num_corruption_points": len(corruption_rows),
         "saved_model_path": str(checkpoint_path),
