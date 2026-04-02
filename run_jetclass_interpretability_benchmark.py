@@ -37,7 +37,6 @@ from run_jetclass_part0_baseline_and_shift import (
     parse_index_spec,
     predict_probs,
     prepare_split_dirs,
-    slice_inputs,
 )
 
 
@@ -126,7 +125,16 @@ def _forward_probs(
     mask: torch.Tensor,
 ) -> torch.Tensor:
     out = model(points, features, vectors, mask)
-    return out / out.sum(dim=1, keepdim=True).clamp_min(1e-12)
+    with torch.no_grad():
+        row_sum = out.sum(dim=1, keepdim=True)
+        looks_like_prob = bool(
+            torch.isfinite(out).all().item()
+            and (out >= -1e-6).all().item()
+            and (row_sum - 1.0).abs().max().item() < 1e-3
+        )
+    if looks_like_prob:
+        return out.clamp_min(1e-12)
+    return torch.softmax(out, dim=1).clamp_min(1e-12)
 
 
 def _gather_target_logprob(probs: torch.Tensor, target_idx: torch.Tensor) -> torch.Tensor:
@@ -145,6 +153,79 @@ def _tensor_batch(
     vectors = torch.from_numpy(inputs.vectors[start:end]).to(device)
     mask = torch.from_numpy(inputs.mask[start:end]).to(device)
     return points, features, vectors, mask
+
+
+def subset_inputs_by_indices(inputs: InputArrays, indices: np.ndarray) -> InputArrays:
+    idx = np.asarray(indices, dtype=np.int64)
+    return InputArrays(
+        points=inputs.points[idx],
+        features=inputs.features[idx],
+        vectors=inputs.vectors[idx],
+        mask=inputs.mask[idx],
+        y_onehot=inputs.y_onehot[idx],
+        y_index=inputs.y_index[idx],
+    )
+
+
+def select_explain_indices(
+    y_index: np.ndarray,
+    n_select: int,
+    rng: np.random.Generator,
+    mode: str,
+) -> np.ndarray:
+    n_total = len(y_index)
+    if n_select <= 0 or n_select >= n_total:
+        return np.arange(n_total, dtype=np.int64)
+
+    if mode == "head":
+        return np.arange(n_select, dtype=np.int64)
+    if mode == "random":
+        idx = rng.choice(n_total, size=n_select, replace=False)
+        idx.sort()
+        return idx.astype(np.int64)
+    if mode != "stratified":
+        raise ValueError(f"Unsupported explain-sampling mode '{mode}'")
+
+    classes, counts = np.unique(y_index, return_counts=True)
+    probs = counts.astype(np.float64) / float(n_total)
+    raw = probs * float(n_select)
+    alloc = np.floor(raw).astype(np.int64)
+    alloc = np.minimum(alloc, counts)
+    remaining = int(n_select - alloc.sum())
+
+    if remaining > 0:
+        frac = raw - np.floor(raw)
+        while remaining > 0:
+            avail = np.where(counts - alloc > 0)[0]
+            if avail.size == 0:
+                break
+            order = avail[np.argsort(frac[avail])[::-1]]
+            progressed = False
+            for j in order:
+                if remaining <= 0:
+                    break
+                if alloc[j] < counts[j]:
+                    alloc[j] += 1
+                    remaining -= 1
+                    progressed = True
+            if not progressed:
+                break
+
+    picked: List[np.ndarray] = []
+    for cls, k in zip(classes, alloc):
+        if k <= 0:
+            continue
+        cls_idx = np.flatnonzero(y_index == cls)
+        pick = rng.choice(cls_idx, size=int(k), replace=False)
+        picked.append(pick.astype(np.int64))
+    if not picked:
+        idx = rng.choice(n_total, size=n_select, replace=False)
+        idx.sort()
+        return idx.astype(np.int64)
+
+    out = np.concatenate(picked, axis=0)
+    rng.shuffle(out)
+    return out.astype(np.int64)
 
 
 def _attr_input_gradients(
@@ -454,6 +535,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-indices", default="8")
     parser.add_argument("--max-eval-jets", type=int, default=120000)
     parser.add_argument("--max-explain-jets", type=int, default=20000)
+    parser.add_argument(
+        "--explain-sampling",
+        default="stratified",
+        choices=["stratified", "random", "head"],
+        help="How to pick the explain subset from eval jets.",
+    )
     parser.add_argument("--eval-batch-size", type=int, default=1024)
     parser.add_argument("--attr-batch-size", type=int, default=96)
 
@@ -517,8 +604,17 @@ def main() -> int:
     explain_n = len(eval_inputs.y_index)
     if args.max_explain_jets > 0:
         explain_n = min(explain_n, args.max_explain_jets)
-    explain_inputs = slice_inputs(eval_inputs, explain_n)
+    explain_idx = select_explain_indices(
+        y_index=eval_inputs.y_index,
+        n_select=explain_n,
+        rng=rng,
+        mode=args.explain_sampling,
+    )
+    explain_inputs = subset_inputs_by_indices(eval_inputs, explain_idx)
     print(f"Using {len(explain_inputs.y_index)} jets for attribution benchmarking.")
+    uniq_e, cnt_e = np.unique(explain_inputs.y_index, return_counts=True)
+    explain_label_dist = {LABEL_NAMES[int(k)]: int(v) for k, v in zip(uniq_e, cnt_e)}
+    print(f"Explain subset label distribution: {explain_label_dist}")
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     if device.type == "cpu" and args.device != "cpu":
@@ -634,6 +730,8 @@ def main() -> int:
         "seed": args.seed,
         "num_eval_jets": int(len(eval_inputs.y_index)),
         "num_explain_jets": int(len(explain_inputs.y_index)),
+        "explain_sampling": args.explain_sampling,
+        "explain_label_distribution": explain_label_dist,
         "clean_metrics_eval_split": clean_metrics_eval,
         "clean_metrics_explain_subset": clean_metrics,
         "best_method_by_target_prob_gap": method_summary_rows[0] if method_summary_rows else None,
@@ -671,4 +769,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

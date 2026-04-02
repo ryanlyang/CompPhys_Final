@@ -32,7 +32,8 @@ ATTR_BATCH_SIZE="${ATTR_BATCH_SIZE:-96}"
 DEVICE="${DEVICE:-cuda}"
 
 METHODS="${METHODS:-input_gradients,integrated_gradients,smoothgrad}"
-TARGET_MODE="${TARGET_MODE:-pred}"  # pred | true
+TARGET_MODE="${TARGET_MODE:-true}"  # pred | true
+EXPLAIN_SAMPLING="${EXPLAIN_SAMPLING:-stratified}"  # stratified | random | head
 MASK_FRACTIONS="${MASK_FRACTIONS:-0.02,0.05,0.1,0.2}"
 RANDOM_REPEATS="${RANDOM_REPEATS:-3}"
 IG_STEPS="${IG_STEPS:-16}"
@@ -126,6 +127,7 @@ CMD=(
   --test-indices "${TEST_INDICES}"
   --max-eval-jets "${MAX_EVAL_JETS}"
   --max-explain-jets "${MAX_EXPLAIN_JETS}"
+  --explain-sampling "${EXPLAIN_SAMPLING}"
   --eval-batch-size "${EVAL_BATCH_SIZE}"
   --attr-batch-size "${ATTR_BATCH_SIZE}"
   --methods "${METHODS}"
@@ -149,6 +151,7 @@ echo "Checkpoint: ${CHECKPOINT}"
 echo "Feature set: ${FEATURE_SET}"
 echo "Methods: ${METHODS}"
 echo "Target mode: ${TARGET_MODE}"
+echo "Explain sampling: ${EXPLAIN_SAMPLING}"
 echo "Mask fractions: ${MASK_FRACTIONS}"
 echo "Eval jets: ${MAX_EVAL_JETS}"
 echo "Explain jets: ${MAX_EXPLAIN_JETS}"
