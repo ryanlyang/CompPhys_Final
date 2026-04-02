@@ -617,6 +617,13 @@ def predict_probs(
             pred = pred.detach().cpu().numpy()
             outs.append(pred)
     raw = np.concatenate(outs, axis=0)
+    if not np.isfinite(raw).all():
+        n_bad = int(np.size(raw) - np.isfinite(raw).sum())
+        print(
+            f"Warning: model output contains {n_bad} non-finite values; applying nan_to_num stabilization.",
+            file=sys.stderr,
+        )
+        raw = np.nan_to_num(raw, nan=0.0, posinf=50.0, neginf=-50.0)
     # If model output already looks like probabilities, keep it; otherwise
     # apply softmax as logits->prob conversion.
     row_sum = raw.sum(axis=1, keepdims=True)
@@ -631,6 +638,8 @@ def predict_probs(
         x = raw - np.max(raw, axis=1, keepdims=True)
         ex = np.exp(x)
         probs = ex / np.clip(ex.sum(axis=1, keepdims=True), 1e-12, None)
+    probs = np.nan_to_num(probs, nan=0.0, posinf=1.0, neginf=0.0)
+    probs = probs / np.clip(probs.sum(axis=1, keepdims=True), 1e-12, None)
     return probs
 
 
@@ -690,6 +699,9 @@ def js_divergence(p: np.ndarray, q: np.ndarray) -> float:
 
 
 def compute_supervised_metrics(inputs: InputArrays, probs: np.ndarray) -> Dict[str, float]:
+    if not np.isfinite(probs).all():
+        n_bad = int(np.size(probs) - np.isfinite(probs).sum())
+        raise RuntimeError(f"Non-finite probabilities encountered in metric computation: {n_bad}")
     pred = probs.argmax(axis=1)
     acc = float((pred == inputs.y_index).mean())
     auc = macro_auc(inputs.y_onehot, probs)

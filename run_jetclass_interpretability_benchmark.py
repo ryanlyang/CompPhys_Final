@@ -125,6 +125,8 @@ def _forward_probs(
     mask: torch.Tensor,
 ) -> torch.Tensor:
     out = model(points, features, vectors, mask)
+    if not torch.isfinite(out).all():
+        out = torch.nan_to_num(out, nan=0.0, posinf=50.0, neginf=-50.0)
     with torch.no_grad():
         row_sum = out.sum(dim=1, keepdim=True)
         looks_like_prob = bool(
@@ -133,8 +135,12 @@ def _forward_probs(
             and (row_sum - 1.0).abs().max().item() < 1e-3
         )
     if looks_like_prob:
-        return out.clamp_min(1e-12)
-    return torch.softmax(out, dim=1).clamp_min(1e-12)
+        probs = out.clamp_min(1e-12)
+    else:
+        probs = torch.softmax(out, dim=1).clamp_min(1e-12)
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=1.0, neginf=0.0)
+    probs = probs / probs.sum(dim=1, keepdim=True).clamp_min(1e-12)
+    return probs
 
 
 def _gather_target_logprob(probs: torch.Tensor, target_idx: torch.Tensor) -> torch.Tensor:
