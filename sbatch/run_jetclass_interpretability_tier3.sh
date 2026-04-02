@@ -15,7 +15,8 @@ DATASET_DIR="${DATASET_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part
 OUTPUT_ROOT="${OUTPUT_ROOT:-/home/ryreu/atlas/CompPhys_Final/runs/jetclass_part0_interpretability}"
 FEATURE_SET="${FEATURE_SET:-kinpid}"
 SEED="${SEED:-1}"
-RUN_TAG="${RUN_TAG:-part0_${FEATURE_SET}_seed${SEED}_interp}"
+RUN_SUFFIX="${RUN_SUFFIX:-interp_v4}"
+RUN_TAG="${RUN_TAG:-part0_${FEATURE_SET}_seed${SEED}_${RUN_SUFFIX}}"
 LOG_ROOT="${LOG_ROOT:-${OUTPUT_ROOT}/slurm_logs}"
 
 # Required: path to trained checkpoint (saved_model.pt)
