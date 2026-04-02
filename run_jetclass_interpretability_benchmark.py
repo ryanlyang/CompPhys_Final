@@ -30,6 +30,7 @@ except ModuleNotFoundError:
 from run_jetclass_part0_baseline_and_shift import (
     InputArrays,
     LABEL_NAMES,
+    best_permutation_accuracy,
     build_model,
     compute_supervised_metrics,
     js_divergence,
@@ -127,17 +128,7 @@ def _forward_probs(
     out = model(points, features, vectors, mask)
     if not torch.isfinite(out).all():
         out = torch.nan_to_num(out, nan=0.0, posinf=50.0, neginf=-50.0)
-    with torch.no_grad():
-        row_sum = out.sum(dim=1, keepdim=True)
-        looks_like_prob = bool(
-            torch.isfinite(out).all().item()
-            and (out >= -1e-6).all().item()
-            and (row_sum - 1.0).abs().max().item() < 1e-3
-        )
-    if looks_like_prob:
-        probs = out.clamp_min(1e-12)
-    else:
-        probs = torch.softmax(out, dim=1).clamp_min(1e-12)
+    probs = torch.softmax(out, dim=1).clamp_min(1e-12)
     probs = torch.nan_to_num(probs, nan=0.0, posinf=1.0, neginf=0.0)
     probs = probs / probs.sum(dim=1, keepdim=True).clamp_min(1e-12)
     return probs
@@ -635,8 +626,18 @@ def main() -> int:
 
     clean_probs_eval = predict_probs(model, eval_inputs, args.eval_batch_size, device)
     clean_metrics_eval = compute_supervised_metrics(eval_inputs, clean_probs_eval)
+    clean_perm_eval = best_permutation_accuracy(
+        y_true=eval_inputs.y_index,
+        y_pred=clean_probs_eval.argmax(axis=1),
+        n_classes=len(LABEL_NAMES),
+    )
     clean_probs = clean_probs_eval[:explain_n]
     clean_metrics = compute_supervised_metrics(explain_inputs, clean_probs)
+    clean_perm_explain = best_permutation_accuracy(
+        y_true=explain_inputs.y_index,
+        y_pred=clean_probs.argmax(axis=1),
+        n_classes=len(LABEL_NAMES),
+    )
     clean_pred = clean_probs.argmax(axis=1)
 
     if args.target_mode == "pred":
@@ -739,7 +740,9 @@ def main() -> int:
         "explain_sampling": args.explain_sampling,
         "explain_label_distribution": explain_label_dist,
         "clean_metrics_eval_split": clean_metrics_eval,
+        "label_order_permutation_diagnostic_eval_split": clean_perm_eval,
         "clean_metrics_explain_subset": clean_metrics,
+        "label_order_permutation_diagnostic_explain_subset": clean_perm_explain,
         "best_method_by_target_prob_gap": method_summary_rows[0] if method_summary_rows else None,
     }
 
@@ -761,6 +764,12 @@ def main() -> int:
     print("\n=== Clean metrics (eval split) ===")
     for k, v in clean_metrics_eval.items():
         print(f"{k:>18s}: {v:.6f}")
+    if np.isfinite(float(clean_perm_eval.get("best_permutation_accuracy", float("nan")))):
+        print(
+            f"{'best_perm_acc':>18s}: "
+            f"{clean_perm_eval['best_permutation_accuracy']:.6f} "
+            f"(delta={clean_perm_eval['improvement_over_raw']:.6f})"
+        )
     print("\n=== Method ranking (targeted-vs-random target-prob-drop gap) ===")
     for row in method_summary_rows:
         print(

@@ -51,6 +51,11 @@ try:
 except ModuleNotFoundError:
     yaml = None
 
+try:
+    from scipy.optimize import linear_sum_assignment
+except ModuleNotFoundError:
+    linear_sum_assignment = None
+
 if vector is not None and ak is not None:
     vector.register_awkward()
 
@@ -83,7 +88,7 @@ LABEL_NAMES = [
 
 FEATURE_DIMS = {"kin": 7, "kinpid": 13, "full": 17}
 CORRUPTION_TYPES = ("gaussian_noise", "dropout", "masking", "eta_phi_jitter")
-_INPUT_TRANSFORM_CACHE: Dict[str, Dict[str, List[Tuple[str, float | None, float, float | None, float | None]]]] = {}
+_INPUT_TRANSFORM_CACHE: Dict[str, Dict[str, Dict[str, object]]] = {}
 
 
 @dataclass
@@ -260,13 +265,41 @@ def find_checkpoint(search_root: Path) -> Path:
     return sorted(candidates, key=score, reverse=True)[0]
 
 
-def _pad(a, maxlen: int, value: float = 0.0, dtype: str = "float32") -> ak.Array:
-    if isinstance(a, ak.Array):
-        if a.ndim == 1:
-            a = ak.unflatten(a, 1)
-        a = ak.fill_none(ak.pad_none(a, maxlen, clip=True), value)
-        return ak.values_astype(a, dtype)
-    raise TypeError(f"Expected awkward array, got {type(a)}")
+def _build_wrap_index(ref: ak.Array, maxlen: int) -> Tuple[ak.Array, np.ndarray]:
+    counts = ak.to_numpy(ak.num(ref, axis=1)).astype(np.int64, copy=False)
+    n = int(counts.shape[0])
+    base = np.broadcast_to(np.arange(maxlen, dtype=np.int64), (n, maxlen))
+    counts_safe = np.where(counts > 0, counts, 1)[:, None]
+    wrap_idx = base % counts_safe
+    return ak.Array(wrap_idx), (counts == 0)
+
+
+def _pad(
+    a: ak.Array,
+    maxlen: int,
+    pad_mode: str = "constant",
+    value: float = 0.0,
+    dtype: str = "float32",
+    wrap_idx: ak.Array | None = None,
+    wrap_zero_rows: np.ndarray | None = None,
+) -> ak.Array:
+    if not isinstance(a, ak.Array):
+        raise TypeError(f"Expected awkward array, got {type(a)}")
+    if a.ndim == 1:
+        a = ak.unflatten(a, 1)
+
+    if pad_mode == "wrap":
+        idx = wrap_idx
+        zero_rows = wrap_zero_rows
+        if idx is None or zero_rows is None:
+            idx, zero_rows = _build_wrap_index(a, maxlen)
+        out = a[idx]
+        if bool(np.any(zero_rows)):
+            zmask = ak.Array(np.broadcast_to(zero_rows[:, None], (len(zero_rows), maxlen)))
+            out = ak.where(zmask, value, out)
+    else:
+        out = ak.fill_none(ak.pad_none(a, maxlen, clip=True), value)
+    return ak.values_astype(out, dtype)
 
 
 def _delta_phi(phi1: ak.Array, phi2: ak.Array) -> ak.Array:
@@ -296,10 +329,10 @@ def _clip_max_jagged(x: ak.Array, max_value: float) -> ak.Array:
     return ak.where(x > max_value, max_value, x)
 
 
-def _parse_var_spec(item) -> Tuple[str, float | None, float, float | None, float | None]:
+def _parse_var_spec(item) -> Tuple[str, float | None, float, float | None, float | None, float]:
     # [name, subtract, multiply, clip_min, clip_max, ...]
     if isinstance(item, str):
-        return item, None, 1.0, -5.0, 5.0
+        return item, None, 1.0, -5.0, 5.0, 0.0
     if not isinstance(item, (list, tuple)) or len(item) < 1:
         raise ValueError(f"Invalid variable spec: {item}")
     name = str(item[0])
@@ -307,12 +340,13 @@ def _parse_var_spec(item) -> Tuple[str, float | None, float, float | None, float
     mul = 1.0 if len(item) < 3 or item[2] is None else float(item[2])
     cmin = -5.0 if len(item) < 4 or item[3] is None else float(item[3])
     cmax = 5.0 if len(item) < 5 or item[4] is None else float(item[4])
-    return name, sub, mul, cmin, cmax
+    padv = 0.0 if len(item) < 6 or item[5] is None else float(item[5])
+    return name, sub, mul, cmin, cmax, padv
 
 
 def _load_input_transforms(
     feature_set: str,
-) -> Dict[str, List[Tuple[str, float | None, float, float | None, float | None]]]:
+) -> Dict[str, Dict[str, object]]:
     cached = _INPUT_TRANSFORM_CACHE.get(feature_set)
     if cached is not None:
         return cached
@@ -325,10 +359,17 @@ def _load_input_transforms(
     cfg = yaml.safe_load(cfg_path.read_text())
     inputs_cfg = cfg.get("inputs", {})
 
-    out: Dict[str, List[Tuple[str, float | None, float, float | None, float | None]]] = {}
+    out: Dict[str, Dict[str, object]] = {}
     for group in ("pf_points", "pf_features", "pf_vectors", "pf_mask"):
-        var_specs = inputs_cfg.get(group, {}).get("vars", [])
-        out[group] = [_parse_var_spec(v) for v in var_specs]
+        gcfg = inputs_cfg.get(group, {}) or {}
+        var_specs = gcfg.get("vars", [])
+        parsed_vars = [_parse_var_spec(v) for v in var_specs]
+        out[group] = {
+            "length": int(gcfg.get("length", 128)),
+            "pad_mode": str(gcfg.get("pad_mode", "constant")),
+            "vars": parsed_vars,
+            "pad_value": float(parsed_vars[0][5]) if parsed_vars else 0.0,
+        }
     _INPUT_TRANSFORM_CACHE[feature_set] = out
     return out
 
@@ -354,7 +395,7 @@ def _apply_input_transform(
 
 def _build_features(
     table: Dict[str, ak.Array],
-    feature_set: str,
+    transforms: Dict[str, Dict[str, object]],
     eps: float = 1e-8,
 ) -> Tuple[List[ak.Array], List[ak.Array], List[ak.Array], List[ak.Array]]:
     p4 = vector.zip(
@@ -426,11 +467,9 @@ def _build_features(
         "part_mask": part_mask,
     }
 
-    transforms = _load_input_transforms(feature_set)
-
     def _assemble(group: str) -> List[ak.Array]:
         arrs: List[ak.Array] = []
-        for name, sub, mul, cmin, cmax in transforms[group]:
+        for name, sub, mul, cmin, cmax, _padv in transforms[group]["vars"]:
             if name not in var_map:
                 raise KeyError(f"Variable '{name}' required by config missing in var_map")
             arrs.append(_apply_input_transform(var_map[name], sub, mul, cmin, cmax))
@@ -441,6 +480,43 @@ def _build_features(
     pf_vectors = _assemble("pf_vectors")
     pf_mask = _assemble("pf_mask")
     return pf_points, pf_features, pf_vectors, pf_mask
+
+
+def _stack_group(
+    arrs: List[ak.Array],
+    group_cfg: Dict[str, object],
+    max_num_particles: int,
+) -> np.ndarray:
+    if not arrs:
+        raise ValueError("Cannot stack empty input group.")
+    cfg_len = int(group_cfg.get("length", 128))
+    length = min(cfg_len, max_num_particles) if max_num_particles > 0 else cfg_len
+    pad_mode = str(group_cfg.get("pad_mode", "constant"))
+    pad_value = float(group_cfg.get("pad_value", 0.0))
+
+    wrap_idx = None
+    wrap_zero_rows = None
+    if pad_mode == "wrap":
+        wrap_idx, wrap_zero_rows = _build_wrap_index(arrs[0], length)
+
+    stacked = np.stack(
+        [
+            ak.to_numpy(
+                _pad(
+                    v,
+                    length,
+                    pad_mode=pad_mode,
+                    value=pad_value,
+                    dtype="float32",
+                    wrap_idx=wrap_idx,
+                    wrap_zero_rows=wrap_zero_rows,
+                )
+            )
+            for v in arrs
+        ],
+        axis=1,
+    ).astype(np.float32, copy=False)
+    return stacked
 
 
 def read_root_file(
@@ -487,19 +563,12 @@ def read_root_file(
     load_branches = sorted(required | (optional & available))
     table = tree.arrays(load_branches)
 
-    pf_points, pf_features, pf_vectors, pf_mask = _build_features(table, feature_set)
-    x_points = np.stack(
-        [ak.to_numpy(_pad(v, max_num_particles)) for v in pf_points], axis=1
-    ).astype(np.float32)
-    x_features = np.stack(
-        [ak.to_numpy(_pad(v, max_num_particles)) for v in pf_features], axis=1
-    ).astype(np.float32)
-    x_vectors = np.stack(
-        [ak.to_numpy(_pad(v, max_num_particles)) for v in pf_vectors], axis=1
-    ).astype(np.float32)
-    x_mask = np.stack([ak.to_numpy(_pad(v, max_num_particles)) for v in pf_mask], axis=1).astype(
-        np.float32
-    )
+    transforms = _load_input_transforms(feature_set)
+    pf_points, pf_features, pf_vectors, pf_mask = _build_features(table, transforms)
+    x_points = _stack_group(pf_points, transforms["pf_points"], max_num_particles)
+    x_features = _stack_group(pf_features, transforms["pf_features"], max_num_particles)
+    x_vectors = _stack_group(pf_vectors, transforms["pf_vectors"], max_num_particles)
+    x_mask = _stack_group(pf_mask, transforms["pf_mask"], max_num_particles)
     y_onehot = np.stack([ak.to_numpy(table[n]).astype(np.int64) for n in LABEL_NAMES], axis=1)
     y_index = y_onehot.argmax(axis=1)
     return InputArrays(
@@ -587,7 +656,9 @@ def build_model(feature_set: str, num_classes: int, checkpoint_path: Path, devic
         fc_params=[],
         activation="gelu",
         trim=True,
-        for_inference=True,
+        # Keep inference config aligned with training network config.
+        # We explicitly apply softmax in predict_probs().
+        for_inference=False,
     )
     model = ParticleTransformerWrapper(**cfg)
     state = torch.load(checkpoint_path, map_location="cpu")
@@ -624,20 +695,10 @@ def predict_probs(
             file=sys.stderr,
         )
         raw = np.nan_to_num(raw, nan=0.0, posinf=50.0, neginf=-50.0)
-    # If model output already looks like probabilities, keep it; otherwise
-    # apply softmax as logits->prob conversion.
-    row_sum = raw.sum(axis=1, keepdims=True)
-    looks_like_prob = bool(
-        np.all(raw >= -1e-6)
-        and np.all(np.isfinite(raw))
-        and np.all(np.abs(row_sum - 1.0) < 1e-3)
-    )
-    if looks_like_prob:
-        probs = raw
-    else:
-        x = raw - np.max(raw, axis=1, keepdims=True)
-        ex = np.exp(x)
-        probs = ex / np.clip(ex.sum(axis=1, keepdims=True), 1e-12, None)
+    # Model is loaded with for_inference=False, so output is logits.
+    x = raw - np.max(raw, axis=1, keepdims=True)
+    ex = np.exp(x)
+    probs = ex / np.clip(ex.sum(axis=1, keepdims=True), 1e-12, None)
     probs = np.nan_to_num(probs, nan=0.0, posinf=1.0, neginf=0.0)
     probs = probs / np.clip(probs.sum(axis=1, keepdims=True), 1e-12, None)
     return probs
@@ -713,6 +774,35 @@ def compute_supervised_metrics(inputs: InputArrays, probs: np.ndarray) -> Dict[s
         "mean_entropy": entropy,
         "mean_confidence": conf,
     }
+
+
+def compute_confusion_counts(y_true: np.ndarray, y_pred: np.ndarray, n_classes: int) -> np.ndarray:
+    cm = np.zeros((n_classes, n_classes), dtype=np.int64)
+    np.add.at(cm, (y_true, y_pred), 1)
+    return cm
+
+
+def best_permutation_accuracy(y_true: np.ndarray, y_pred: np.ndarray, n_classes: int) -> Dict[str, object]:
+    cm = compute_confusion_counts(y_true, y_pred, n_classes=n_classes)
+    total = int(cm.sum())
+    raw_acc = float(np.trace(cm) / max(total, 1))
+    out: Dict[str, object] = {
+        "raw_accuracy_from_cm": raw_acc,
+        "best_permutation_accuracy": float("nan"),
+        "improvement_over_raw": float("nan"),
+        "row_to_col_mapping": {},
+    }
+    if linear_sum_assignment is None:
+        out["note"] = "scipy not available; skipping permutation diagnostic."
+        return out
+    row_ind, col_ind = linear_sum_assignment(-cm)
+    matched = int(cm[row_ind, col_ind].sum())
+    best_acc = float(matched / max(total, 1))
+    mapping = {int(r): int(c) for r, c in zip(row_ind.tolist(), col_ind.tolist())}
+    out["best_permutation_accuracy"] = best_acc
+    out["improvement_over_raw"] = float(best_acc - raw_acc)
+    out["row_to_col_mapping"] = mapping
+    return out
 
 
 def feature_indices_for_deta_dphi(feature_set: str) -> Tuple[int, int]:
@@ -1059,8 +1149,18 @@ def main() -> int:
     clean_metrics = compute_supervised_metrics(clean_inputs, clean_probs)
     clean_class_prob_dist = clean_probs.mean(axis=0)
     clean_top1 = clean_probs.argmax(axis=1)
+    perm_diag = best_permutation_accuracy(
+        y_true=clean_inputs.y_index, y_pred=clean_top1, n_classes=len(LABEL_NAMES)
+    )
     clean_top1_frac = np.bincount(clean_top1, minlength=len(LABEL_NAMES)).astype(np.float64)
     clean_top1_frac = clean_top1_frac / np.clip(clean_top1_frac.sum(), 1e-12, None)
+    if np.isfinite(float(perm_diag.get("best_permutation_accuracy", float("nan")))):
+        print(
+            "Permutation diagnostic: "
+            f"raw_acc={perm_diag['raw_accuracy_from_cm']:.6f}, "
+            f"best_perm_acc={perm_diag['best_permutation_accuracy']:.6f}, "
+            f"delta={perm_diag['improvement_over_raw']:.6f}"
+        )
 
     corruption_rows, corr_rows = run_corruption_study(
         model=model,
@@ -1079,6 +1179,7 @@ def main() -> int:
         "clean_top1_fraction": {
             LABEL_NAMES[i]: float(clean_top1_frac[i]) for i in range(len(LABEL_NAMES))
         },
+        "label_order_permutation_diagnostic": perm_diag,
         "top_correlations_by_spearman_auc_drop": summarize_top_correlations(corr_rows),
         "num_corruption_points": len(corruption_rows),
         "saved_model_path": str(checkpoint_path),
