@@ -494,28 +494,57 @@ def _stack_group(
     pad_mode = str(group_cfg.get("pad_mode", "constant"))
     pad_value = float(group_cfg.get("pad_value", 0.0))
 
-    wrap_idx = None
-    wrap_zero_rows = None
-    if pad_mode == "wrap":
-        wrap_idx, wrap_zero_rows = _build_wrap_index(arrs[0], length)
+    cols: List[np.ndarray] = []
+    for v in arrs:
+        if not isinstance(v, ak.Array):
+            raise TypeError(f"Expected awkward array in _stack_group, got {type(v)}")
+        if v.ndim == 1:
+            v = ak.unflatten(v, 1)
 
-    stacked = np.stack(
-        [
-            ak.to_numpy(
-                _pad(
-                    v,
-                    length,
-                    pad_mode=pad_mode,
-                    value=pad_value,
-                    dtype="float32",
-                    wrap_idx=wrap_idx,
-                    wrap_zero_rows=wrap_zero_rows,
-                )
-            )
-            for v in arrs
-        ],
-        axis=1,
-    ).astype(np.float32, copy=False)
+        if pad_mode == "wrap":
+            counts = ak.to_numpy(ak.num(v, axis=1)).astype(np.int64, copy=False)
+            n = int(counts.shape[0])
+            out = np.full((n, length), pad_value, dtype=np.float32)
+            nonempty = counts > 0
+            if np.any(nonempty):
+                v_ne = v[nonempty]
+                c_ne = counts[nonempty]
+                wrap_idx = np.broadcast_to(np.arange(length, dtype=np.int64), (len(c_ne), length))
+                wrap_idx = wrap_idx % c_ne[:, None]
+                wrapped = v_ne[ak.Array(wrap_idx)]
+                try:
+                    wrapped = ak.to_regular(wrapped, axis=1)
+                except Exception:
+                    pass
+                try:
+                    out[nonempty] = ak.to_numpy(wrapped).astype(np.float32, copy=False)
+                except Exception:
+                    idx_nonempty = np.flatnonzero(nonempty)
+                    wrapped_rows = ak.to_list(wrapped)
+                    for j, ridx in enumerate(idx_nonempty.tolist()):
+                        row = np.asarray(wrapped_rows[j], dtype=np.float32)
+                        if row.size == 0:
+                            continue
+                        out[ridx] = np.resize(row, length)
+            cols.append(out)
+        else:
+            out = _pad(v, length, pad_mode="constant", value=pad_value, dtype="float32")
+            try:
+                out = ak.to_regular(out, axis=1)
+            except Exception:
+                pass
+            try:
+                cols.append(ak.to_numpy(out).astype(np.float32, copy=False))
+            except Exception:
+                rows = ak.to_list(out)
+                dense = np.full((len(rows), length), pad_value, dtype=np.float32)
+                for i, row in enumerate(rows):
+                    arr = np.asarray(row, dtype=np.float32)
+                    if arr.size > 0:
+                        dense[i, : min(length, arr.size)] = arr[:length]
+                cols.append(dense)
+
+    stacked = np.stack(cols, axis=1).astype(np.float32, copy=False)
     return stacked
 
 
