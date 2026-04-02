@@ -125,6 +125,10 @@ def _forward_probs(
     vectors: torch.Tensor,
     mask: torch.Tensor,
 ) -> torch.Tensor:
+    points = torch.nan_to_num(points, nan=0.0, posinf=0.0, neginf=0.0)
+    features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+    vectors = torch.nan_to_num(vectors, nan=0.0, posinf=0.0, neginf=0.0)
+    mask = torch.nan_to_num(mask, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
     out = model(points, features, vectors, mask)
     if not torch.isfinite(out).all():
         out = torch.nan_to_num(out, nan=0.0, posinf=50.0, neginf=-50.0)
@@ -137,6 +141,20 @@ def _forward_probs(
 def _gather_target_logprob(probs: torch.Tensor, target_idx: torch.Tensor) -> torch.Tensor:
     gathered = probs.gather(1, target_idx[:, None]).squeeze(1)
     return torch.log(gathered.clamp_min(1e-12))
+
+
+def _safe_grad(score: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    grad = torch.autograd.grad(
+        score,
+        x,
+        retain_graph=False,
+        create_graph=False,
+        allow_unused=True,
+    )[0]
+    if grad is None:
+        grad = torch.zeros_like(x)
+    grad = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+    return grad
 
 
 def _tensor_batch(
@@ -236,7 +254,7 @@ def _attr_input_gradients(
     x = features.detach().clone().requires_grad_(True)
     probs = _forward_probs(model, points, x, vectors, mask)
     score = _gather_target_logprob(probs, target_idx).sum()
-    grad = torch.autograd.grad(score, x, retain_graph=False, create_graph=False)[0]
+    grad = _safe_grad(score, x)
     return grad
 
 
@@ -251,7 +269,7 @@ def _attr_grad_x_input(
     x = features.detach().clone().requires_grad_(True)
     probs = _forward_probs(model, points, x, vectors, mask)
     score = _gather_target_logprob(probs, target_idx).sum()
-    grad = torch.autograd.grad(score, x, retain_graph=False, create_graph=False)[0]
+    grad = _safe_grad(score, x)
     return grad * x
 
 
@@ -273,7 +291,7 @@ def _attr_integrated_gradients(
         x_step = (baseline + alpha * delta).detach().requires_grad_(True)
         probs = _forward_probs(model, points, x_step, vectors, mask)
         score = _gather_target_logprob(probs, target_idx).sum()
-        grad = torch.autograd.grad(score, x_step, retain_graph=False, create_graph=False)[0]
+        grad = _safe_grad(score, x_step)
         total_grad += grad
     avg_grad = total_grad / float(ig_steps)
     return delta * avg_grad
@@ -296,7 +314,7 @@ def _attr_smoothgrad(
         x_noisy = (x + noise).detach().requires_grad_(True)
         probs = _forward_probs(model, points, x_noisy, vectors, mask)
         score = _gather_target_logprob(probs, target_idx).sum()
-        grad = torch.autograd.grad(score, x_noisy, retain_graph=False, create_graph=False)[0]
+        grad = _safe_grad(score, x_noisy)
         total_abs_grad += grad.abs()
     return total_abs_grad / float(smoothgrad_samples)
 
