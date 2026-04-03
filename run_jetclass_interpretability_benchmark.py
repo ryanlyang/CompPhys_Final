@@ -150,7 +150,7 @@ def _forward_probs(
             points[idx2, :, 0] = 0.0
             features[idx2, :, 0] = 0.0
             vectors[idx2, :, 0] = 0.0
-    out = model(points, features, vectors, mask)
+    out = model(points, features, vectors, (mask > 0.5))
     if not torch.isfinite(out).all():
         out = torch.nan_to_num(out, nan=0.0, posinf=50.0, neginf=-50.0)
     probs = torch.softmax(out, dim=1).clamp_min(1e-12)

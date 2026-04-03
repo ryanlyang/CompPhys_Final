@@ -231,7 +231,7 @@ def predict_probs(
         vectors = _tensor_from_np(inputs.vectors[start:end], device)
         mask = _tensor_from_np(inputs.mask[start:end], device)
 
-        logits = model(points, features, vectors, mask)
+        logits = model(points, features, vectors, (mask > 0.5))
         if not torch.isfinite(logits).all():
             logits = torch.nan_to_num(logits, nan=0.0, posinf=50.0, neginf=-50.0)
         probs = torch.softmax(logits, dim=1)
@@ -272,7 +272,7 @@ def estimate_feature_importance(
         y = torch.from_numpy(inputs.y_index[bidx]).to(device=device, dtype=torch.long)
 
         features.requires_grad_(True)
-        logits = model(points, features, vectors, mask)
+        logits = model(points, features, vectors, (mask > 0.5))
         if not torch.isfinite(logits).all():
             logits = torch.nan_to_num(logits, nan=0.0, posinf=50.0, neginf=-50.0)
         score = _score_from_logits(logits, y, score_mode)
@@ -493,7 +493,7 @@ def main() -> int:
             features.requires_grad_(rrr_enabled)
             optimizer.zero_grad(set_to_none=True)
 
-            logits = model(points, features, vectors, mask)
+            logits = model(points, features, vectors, (mask > 0.5))
             if not torch.isfinite(logits).all():
                 logits = torch.nan_to_num(logits, nan=0.0, posinf=50.0, neginf=-50.0)
             ce = F.cross_entropy(logits, y)

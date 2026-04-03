@@ -922,7 +922,8 @@ def predict_probs(
                     points[idx2, :, 0] = 0.0
                     features[idx2, :, 0] = 0.0
                     vectors[idx2, :, 0] = 0.0
-            pred = model(points, features, vectors, mask)
+            # Match weaver data pipeline: use boolean constituent mask.
+            pred = model(points, features, vectors, (mask > 0.5))
             pred = pred.detach().cpu().numpy()
             outs.append(pred)
     raw = np.concatenate(outs, axis=0)
