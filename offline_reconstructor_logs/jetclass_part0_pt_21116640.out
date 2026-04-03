@@ -1,0 +1,12 @@
+==================================================
+JetClass part0 ParticleTransformer run
+==================================================
+Job ID: 21116640
+Node: skl-a-41
+Python: /home/ryreu/miniconda3/envs/atlas_kd/bin/python
+PyTorch: 2.5.1
+CUDA available: True
+GPU: NVIDIA A100-PCIE-40GB
+
+Running command:
+python train_jetclass_part0_particletransformer.py ...

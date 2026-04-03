@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "/home/ryreu/atlas/jetclass_transformer/train_jetclass_part0_particletransformer.py", line 241, in <module>
+    main()
+  File "/home/ryreu/atlas/jetclass_transformer/train_jetclass_part0_particletransformer.py", line 144, in main
+    raise FileNotFoundError(f"jetclass_repo not found: {args.jetclass_repo}")
+FileNotFoundError: jetclass_repo not found: /home/ryreu/atlas/PracticeTagging/jetclass_transformer
