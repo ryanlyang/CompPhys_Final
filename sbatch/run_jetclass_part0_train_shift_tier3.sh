@@ -49,6 +49,7 @@ JITTER_LEVELS="${JITTER_LEVELS:-0.01,0.03,0.05,0.1}"
 # Optional eval-only mode
 SKIP_TRAIN="${SKIP_TRAIN:-0}"
 CHECKPOINT="${CHECKPOINT:-}"
+TRAINER_LOG="${TRAINER_LOG:-}"
 
 mkdir -p "${RUN_DIR}" "${LOG_DIR}"
 
@@ -72,6 +73,7 @@ echo "Train/Val/Test targets: ${TRAIN_SAMPLES} / ${VAL_SAMPLES} / ${TEST_JETS}"
 echo "GPU arg: ${GPUS}, Device: ${DEVICE}"
 echo "Skip train: ${SKIP_TRAIN}"
 echo "Checkpoint: ${CHECKPOINT:-[none]}"
+echo "Trainer log: ${TRAINER_LOG:-[auto]}"
 echo "============================================================"
 echo
 
@@ -116,7 +118,17 @@ if [[ "${SKIP_TRAIN}" == "1" ]]; then
     echo "ERROR: SKIP_TRAIN=1 requires CHECKPOINT=/path/to/saved_model.pt" >&2
     exit 1
   fi
+  if [[ -z "${TRAINER_LOG}" ]]; then
+    CANDIDATE_LOG="$(dirname "${CHECKPOINT}")/train.log"
+    if [[ -f "${CANDIDATE_LOG}" ]]; then
+      TRAINER_LOG="${CANDIDATE_LOG}"
+    fi
+  fi
   CMD+=(--skip-train --checkpoint "${CHECKPOINT}")
+fi
+
+if [[ -n "${TRAINER_LOG}" ]]; then
+  CMD+=(--trainer-log "${TRAINER_LOG}")
 fi
 
 printf ' %q' "${CMD[@]}"

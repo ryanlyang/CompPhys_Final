@@ -168,8 +168,11 @@ def build_model(feature_set: str, num_classes: int, device: torch.device) -> tor
         activation="gelu",
         trim=True,
         for_inference=False,
+        use_amp=False,
     )
     model = ParticleTransformerWrapper(**cfg)
+    if hasattr(model, "mod") and hasattr(model.mod, "use_amp"):
+        model.mod.use_amp = False
     model.to(device)
     return model
 

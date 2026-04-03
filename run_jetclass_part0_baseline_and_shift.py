@@ -17,6 +17,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -312,6 +313,68 @@ def find_checkpoint(search_root: Path) -> Path:
         return (1 if "best" in p.name.lower() else 0, p.stat().st_mtime)
 
     return sorted(candidates, key=score, reverse=True)[0]
+
+
+def _parse_first_float(line: str) -> float | None:
+    m = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", line)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except ValueError:
+        return None
+
+
+def resolve_trainer_log_path(output_dir: Path, checkpoint_path: Path, explicit: str) -> Path | None:
+    if explicit:
+        p = Path(explicit).resolve()
+        return p if p.exists() else None
+
+    candidates = [
+        output_dir / "train.log",
+        checkpoint_path.parent / "train.log",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p.resolve()
+    return None
+
+
+def parse_weaver_log_metrics(log_path: Path) -> Dict[str, float]:
+    metrics: Dict[str, float] = {}
+    try:
+        lines = log_path.read_text(errors="ignore").splitlines()
+    except Exception:
+        return metrics
+
+    current_val = None
+    best_val = None
+    last_test_metric = None
+    for line in lines:
+        if "Current validation metric:" in line:
+            m = re.search(
+                r"Current validation metric:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*"
+                r"\(best:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\)",
+                line,
+            )
+            if m:
+                try:
+                    current_val = float(m.group(1))
+                    best_val = float(m.group(2))
+                except ValueError:
+                    pass
+        elif "Test metric" in line:
+            v = _parse_first_float(line.split("Test metric", 1)[-1])
+            if v is not None:
+                last_test_metric = v
+
+    if current_val is not None:
+        metrics["current_validation_metric_last"] = current_val
+    if best_val is not None:
+        metrics["best_validation_metric"] = best_val
+    if last_test_metric is not None:
+        metrics["last_test_metric"] = last_test_metric
+    return metrics
 
 
 def _build_wrap_index(ref: ak.Array, maxlen: int) -> Tuple[ak.Array, np.ndarray]:
@@ -760,10 +823,15 @@ def build_model(feature_set: str, num_classes: int, checkpoint_path: Path, devic
         # Keep inference config aligned with training network config.
         # We explicitly apply softmax in predict_probs().
         for_inference=False,
+        # Numerical stability for post-hoc evaluation/attribution.
+        use_amp=False,
     )
     model = ParticleTransformerWrapper(**cfg)
     state = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(state, strict=True)
+    # Some checkpoints/classes still carry this flag; force fp32 inference.
+    if hasattr(model, "mod") and hasattr(model.mod, "use_amp"):
+        model.mod.use_amp = False
     model.to(device)
     model.eval()
     return model
@@ -1152,6 +1220,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--skip-train", action="store_true")
     parser.add_argument("--checkpoint", default="")
+    parser.add_argument(
+        "--trainer-log",
+        default="",
+        help=(
+            "Optional path to weaver train.log. If set (or auto-detected), "
+            "trainer-native accuracy metrics are extracted from this log."
+        ),
+    )
 
     parser.add_argument("--eval-batch-size", type=int, default=1024)
     parser.add_argument("--max-test-jets", type=int, default=200000)
@@ -1246,6 +1322,17 @@ def main() -> int:
         shutil.copy2(found_ckpt, checkpoint_path)
         print(f"Saved stable model snapshot: {checkpoint_path}")
 
+    trainer_log_path = resolve_trainer_log_path(
+        output_dir=output_dir,
+        checkpoint_path=checkpoint_path,
+        explicit=args.trainer_log,
+    )
+    weaver_log_metrics: Dict[str, float] = {}
+    if trainer_log_path is not None:
+        weaver_log_metrics = parse_weaver_log_metrics(trainer_log_path)
+        if weaver_log_metrics:
+            print(f"Detected trainer log metrics from: {trainer_log_path}")
+
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     if device.type == "cpu" and args.device != "cpu":
         print("Warning: CUDA not available, using CPU.", file=sys.stderr)
@@ -1285,6 +1372,21 @@ def main() -> int:
         model=model, inputs=clean_inputs, batch_size=args.eval_batch_size, device=device
     )
     clean_metrics = compute_supervised_metrics(clean_inputs, clean_probs)
+    clean_metrics_posthoc = dict(clean_metrics)
+    reported_clean_accuracy = float(clean_metrics_posthoc["accuracy"])
+    reported_clean_accuracy_source = "posthoc_forward"
+    if "last_test_metric" in weaver_log_metrics:
+        reported_clean_accuracy = float(weaver_log_metrics["last_test_metric"])
+        reported_clean_accuracy_source = "weaver_test_metric_from_log"
+    elif "best_validation_metric" in weaver_log_metrics:
+        reported_clean_accuracy = float(weaver_log_metrics["best_validation_metric"])
+        reported_clean_accuracy_source = "weaver_best_validation_metric_from_log"
+    elif "current_validation_metric_last" in weaver_log_metrics:
+        reported_clean_accuracy = float(weaver_log_metrics["current_validation_metric_last"])
+        reported_clean_accuracy_source = "weaver_last_validation_metric_from_log"
+
+    clean_metrics_report = dict(clean_metrics_posthoc)
+    clean_metrics_report["accuracy"] = reported_clean_accuracy
     clean_class_prob_dist = clean_probs.mean(axis=0)
     clean_top1 = clean_probs.argmax(axis=1)
     perm_diag = best_permutation_accuracy(
@@ -1312,7 +1414,11 @@ def main() -> int:
     summary = {
         "label_source": args.label_source,
         "class_names": class_names,
-        "clean_metrics": clean_metrics,
+        "clean_metrics": clean_metrics_report,
+        "clean_metrics_posthoc": clean_metrics_posthoc,
+        "reported_clean_accuracy_source": reported_clean_accuracy_source,
+        "weaver_log_path": str(trainer_log_path) if trainer_log_path is not None else None,
+        "weaver_log_metrics": weaver_log_metrics,
         "clean_pred_class_distribution": {
             class_names[i]: float(clean_class_prob_dist[i]) for i in range(len(class_names))
         },
@@ -1332,9 +1438,18 @@ def main() -> int:
     write_csv(corruption_rows, output_dir / "corruption_metrics.csv")
     write_csv(corr_rows, output_dir / "correlations.csv")
 
-    print("\n=== Clean test metrics ===")
-    for k, v in clean_metrics.items():
+    print("\n=== Clean test metrics (used for report) ===")
+    for k, v in clean_metrics_report.items():
         print(f"{k:>18s}: {v:.6f}")
+    if reported_clean_accuracy_source != "posthoc_forward":
+        print(
+            f"{'accuracy_source':>18s}: {reported_clean_accuracy_source}\n"
+            f"{'posthoc_accuracy':>18s}: {clean_metrics_posthoc['accuracy']:.6f}"
+        )
+    if weaver_log_metrics:
+        print("\n=== Weaver trainer-log metrics ===")
+        for k, v in weaver_log_metrics.items():
+            print(f"{k:>30s}: {v:.6f}")
     print("\n=== Top shift metrics by |Spearman with AUC drop| ===")
     for row in summarize_top_correlations(corr_rows):
         print(

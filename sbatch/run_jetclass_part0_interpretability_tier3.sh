@@ -19,6 +19,7 @@ if [[ -z "${CHECKPOINT}" ]]; then
   echo "ERROR: CHECKPOINT is required. Set CHECKPOINT=/path/to/saved_model.pt" >&2
   exit 1
 fi
+TRAINER_LOG="${TRAINER_LOG:-}"
 
 FEATURE_SET="${FEATURE_SET:-kinpid}"
 LABEL_SOURCE="${LABEL_SOURCE:-filename}"
@@ -63,6 +64,7 @@ echo "Run dir: ${RUN_DIR}"
 echo "Log dir: ${LOG_DIR}"
 echo "Dataset: ${DATASET_DIR}"
 echo "Checkpoint: ${CHECKPOINT}"
+echo "Trainer log: ${TRAINER_LOG:-[auto]}"
 echo "Feature set: ${FEATURE_SET}"
 echo "Label source: ${LABEL_SOURCE}"
 echo "Methods: ${METHODS}"
@@ -86,6 +88,12 @@ cd "${REPO_ROOT}"
 if [[ ! -f "${CHECKPOINT}" ]]; then
   echo "ERROR: checkpoint not found: ${CHECKPOINT}" >&2
   exit 1
+fi
+if [[ -z "${TRAINER_LOG}" ]]; then
+  CANDIDATE_LOG="$(dirname "${CHECKPOINT}")/train.log"
+  if [[ -f "${CANDIDATE_LOG}" ]]; then
+    TRAINER_LOG="${CANDIDATE_LOG}"
+  fi
 fi
 
 CMD=(
@@ -114,6 +122,10 @@ CMD=(
   --smoothgrad-sigma "${SMOOTHGRAD_SIGMA}"
   --seed "${SEED}"
 )
+
+if [[ -n "${TRAINER_LOG}" ]]; then
+  CMD+=(--trainer-log "${TRAINER_LOG}")
+fi
 
 printf ' %q' "${CMD[@]}"
 echo
