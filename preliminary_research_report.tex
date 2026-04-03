@@ -166,7 +166,7 @@ The working repository for this project is:
 
 Most of the base code structure is inherited from:
 \begin{center}
-\url{https://github.com/jet-universe/particle_transformer}
+\url{https://github.com/jet-universe/particle_transformer} \cite{qu2022particle}
 \end{center}
 This inherited portion includes the underlying Particle Transformer model/network setup, dataset configuration files, and core Weaver-based training infrastructure.
 
@@ -179,10 +179,142 @@ The project-specific code that I added or substantially modified is:
 \item reporting and analysis integration updates (for example, trainer-metric based clean-performance reporting when posthoc inference is unstable).
 \end{itemize}
 
-The current output products include trainer summaries, corruption metric tables, correlation tables, interpretability summaries, and method-comparison CSV files. This is enough to support a preliminary computational study even before the AspenOpenJets stage is complete.
+The current output products include trainer summaries, corruption metric tables, correlation tables, interpretability summaries, and method-comparison CSV files.
+
+
+
+\section{Preliminary Results (Table Skeletons)}
+This section is intentionally formatted as fill-in templates. As current Slurm runs finish, values will be copied directly from:
+\begin{itemize}[leftmargin=*]
+\item \texttt{summary.json} (clean metrics and diagnostics),
+\item \texttt{corruption\_metrics.csv} and \texttt{correlations.csv},
+\item \texttt{interpretability\_summary.json} and \texttt{method\_effectiveness\_summary.csv}.
+\end{itemize}
+
+\subsection*{How to read these tables}
+To make interpretation explicit, the main quantities are defined as follows:
+\begin{itemize}[leftmargin=*]
+\item \textbf{Best val metric}: best validation classification metric reported by the trainer log (used as the trainer-native reference).
+\item \textbf{Test acc}: top-1 test accuracy, i.e.\ fraction of jets with correct predicted class.
+\item \textbf{Macro AUC}: one-vs-rest ROC AUC averaged equally across the 10 classes.
+\item \textbf{Mean entropy}: average predictive entropy $-\sum_c \hat p_c\log \hat p_c$; larger means less certainty.
+\item \textbf{Mean confidence}: average maximum class probability $\max_c \hat p_c$.
+\item \textbf{$\Delta$Acc, $\Delta$AUC}: clean metric minus corrupted metric. Positive values mean performance degradation under corruption.
+\item \textbf{$\Delta$Entropy}: corrupted entropy minus clean entropy. Positive values mean the model became more uncertain.
+\item \textbf{Conf. drop}: clean confidence minus corrupted confidence. Positive values mean confidence decreased under corruption.
+\item \textbf{Flip rate}: fraction of jets whose top-1 predicted class changes between clean and corrupted inputs.
+\item \textbf{JS div}: Jensen--Shannon divergence between clean and corrupted predicted class distributions.
+\item \textbf{Spearman/Pearson correlations}: association between each unlabeled shift metric and supervised degradation across corruption levels.
+\item \textbf{Targeted drop vs random drop}: in interpretability tests, targeted masking removes high-attribution constituents while random masking removes the same fraction uniformly at random.
+\item \textbf{Gap (target-rand)}: targeted minus random effect. A larger positive gap indicates the method better identifies constituents that are actually important for model output.
+\end{itemize}
+
+For this report, trainer-native metrics are treated as authoritative for clean supervised performance, and posthoc values are used as diagnostics when needed.
+
+\subsection*{Table 1: Clean performance across seeds (trainer-native)}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|c|c|c|c|c|c|}
+\hline
+Seed & Best val metric & Test acc & Macro AUC & Mean entropy & Mean confidence \\
+\hline
+0 & TBD & TBD & TBD & TBD & TBD \\
+\hline
+1 & TBD & TBD & TBD & TBD & TBD \\
+\hline
+2 & TBD & TBD & TBD & TBD & TBD \\
+\hline
+\end{tabular}
+\caption{Primary clean-performance table. Trainer-native metrics are treated as authoritative.}
+\end{table}
+
+\subsection*{Table 2: Corruption sweep summary (native evaluation)}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|c|c|c|c|c|c|c|c|}
+\hline
+Corruption & Severity & $\Delta$Acc & $\Delta$AUC & $\Delta$Entropy & Conf. drop & Flip rate & JS div \\
+\hline
+Gaussian noise & TBD & TBD & TBD & TBD & TBD & TBD & TBD \\
+\hline
+Dropout & TBD & TBD & TBD & TBD & TBD & TBD & TBD \\
+\hline
+Masking & TBD & TBD & TBD & TBD & TBD & TBD & TBD \\
+\hline
+$\eta/\phi$ jitter & TBD & TBD & TBD & TBD & TBD & TBD & TBD \\
+\hline
+\end{tabular}
+\caption{Representative corruption results. Full sweep values will be reported in appendix CSV tables.}
+\end{table}
+
+\subsection*{Table 3: Calibration of unlabeled shift metrics}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|c|c|c|c|c|}
+\hline
+Metric & Spearman($\Delta$AUC) & Pearson($\Delta$AUC) & Spearman($\Delta$Acc) & Pearson($\Delta$Acc) \\
+\hline
+Prob. L1 drift & TBD & TBD & TBD & TBD \\
+\hline
+Top-1 flip rate & TBD & TBD & TBD & TBD \\
+\hline
+Class JS divergence & TBD & TBD & TBD & TBD \\
+\hline
+Confidence drop & TBD & TBD & TBD & TBD \\
+\hline
+Entropy shift & TBD & TBD & TBD & TBD \\
+\hline
+\end{tabular}
+\caption{Calibration table: which unlabeled metric best tracks supervised degradation on corrupted JetClass.}
+\end{table}
+
+\subsection*{Table 4: Interpretability method effectiveness}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|c|c|c|c|c|c|}
+\hline
+Method & Targeted drop & Random drop & Gap (target-rand) & AUC gap & Acc gap \\
+\hline
+Input gradients & TBD & TBD & TBD & TBD & TBD \\
+\hline
+Integrated Gradients & TBD & TBD & TBD & TBD & TBD \\
+\hline
+SmoothGrad & TBD & TBD & TBD & TBD & TBD \\
+\hline
+\end{tabular}
+\caption{Method ranking from targeted-versus-random masking.}
+\end{table}
+
+\subsection*{Table 5: Sanity checks and outcomes}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|p{0.30\linewidth}|p{0.28\linewidth}|p{0.16\linewidth}|p{0.16\linewidth}|}
+\hline
+Check & Observed quantity & Expected behavior & Status \\
+\hline
+Class balance in eval split & TBD (counts per class) & Approximately balanced by construction & TBD \\
+\hline
+Trainer-native vs posthoc consistency & TBD (acc\_trainer vs acc\_posthoc) & Close agreement for valid posthoc path & TBD \\
+\hline
+Permutation diagnostic & TBD ($\Delta$ between raw and best-perm acc) & Small $\Delta$ when label mapping is correct & TBD \\
+\hline
+Targeted vs random masking parity & Same mask fractions in both settings & Fair comparison by design & Pass \\
+\hline
+Non-finite output checks & TBD (warning count) & Near-zero after stable eval path & TBD \\
+\hline
+\end{tabular}
+\caption{Sanity checks used to prevent garbage-in, garbage-out conclusions.}
+\end{table}
+
 
 \section{Sanity Checks and GIGO Prevention}
-I am already performing several sanity checks to reduce the chance of drawing conclusions from a broken or misleading pipeline.
+
+I have performed several sanity checks to reduce the chance of conclusions drawn from a broken or misleading codebase:
 
 \begin{itemize}[leftmargin=*]
 \item \textbf{Class-balance checks.} The analysis scripts explicitly print and record the class distribution in each split. For example, the JetClass test split is checked to confirm equal representation across the 10 classes rather than an accidental class imbalance.
@@ -200,13 +332,14 @@ I am already performing several sanity checks to reduce the chance of drawing co
 \item \textbf{Multi-seed reproducibility.} The pipeline is designed to run across multiple random seeds, so the final project can report whether a result is robust or only appears in a single lucky run.
 \end{itemize}
 
-These sanity checks are not just formalities; they have already caught real issues in the current pipeline, especially the mismatch between trainer-native and posthoc metrics. That debugging work is part of the actual scientific progress of the project, because it ensures that future conclusions are based on reliable outputs instead of garbage-in, garbage-out.
+
+These sanity checks have been more than just formalities, they have caught several issues in the pipeline, especially the mismatch between the trainer-native and posthoc metrics. That debugging work is part of the scientific progress of the project because it ensures that future conclusions are based on reliable outputs rather than garbage-in, garbage-out.
 
 \section{Current Status}
-At the time of this preliminary report, the baseline JetClass study is close to complete: baseline training, corruption-based benchmarking, and interpretability benchmarking are all in place and running. The AspenOpenJets stage has not yet been fully integrated into the pipeline, so I am not reporting Aspen results yet. Likewise, the interpretability-guided training code is implemented, but not yet stable enough to claim results from that stage.
 
-This means that the project has already advanced well beyond the proposal stage: the baseline system exists, the benchmarking strategy has been made concrete, multiple diagnostics and sanity checks are implemented, and the next remaining tasks are primarily target-domain integration and stable interpretability-guided training.
+At the time of this preliminary report, the baseline JetClass study is close to complete: the baseline training, corruption-based benchmarking, and the interpretability benchmarking are all in place and running. The AspenOpenJets stage is still in progress. Likewise, the interpretability-guided training code is implmeented, but not yet stable enough or debugged enough to present results from that stage.
 
+This means the project has made decent progress: the baseline system is in place, the benchmarking strategy has been made concrete, multiple diagnostics and sanity checks are implmeented, and the next tasks are AspenOpenJet studies and stable interpretability-guided training.
 \bibliographystyle{plain}
 \bibliography{main}
 
