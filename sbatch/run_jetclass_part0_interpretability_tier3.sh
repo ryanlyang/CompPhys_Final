@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --time=08:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=slurm_jcpart0_interp_%j.out
 #SBATCH --error=slurm_jcpart0_interp_%j.err
 

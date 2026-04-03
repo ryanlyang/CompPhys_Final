@@ -2,7 +2,7 @@
 #SBATCH --job-name=jcpart0_rrr
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
-#SBATCH --mem=40G
+#SBATCH --mem=96G
 #SBATCH --time=3:00:00
 #SBATCH --output=slurm_jcpart0_rrr_%j.out
 #SBATCH --error=slurm_jcpart0_rrr_%j.err
