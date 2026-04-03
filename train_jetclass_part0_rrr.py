@@ -28,7 +28,7 @@ import torch
 import torch.nn.functional as F
 
 from run_jetclass_part0_baseline_and_shift import (
-    CLASS_NAMES,
+    FILENAME_CLASS_NAMES_BY_LABEL_INDEX,
     FEATURE_DIMS,
     InputArrays,
     LABEL_NAMES,
@@ -402,7 +402,9 @@ def main() -> int:
     )
     print(f"Loaded {len(test_inputs.y_index)} test jets.")
 
-    class_names = CLASS_NAMES if args.label_source == "filename" else LABEL_NAMES
+    class_names = (
+        FILENAME_CLASS_NAMES_BY_LABEL_INDEX if args.label_source == "filename" else LABEL_NAMES
+    )
     n_classes = len(class_names)
     for split_name, y in [
         ("train", train_inputs.y_index),

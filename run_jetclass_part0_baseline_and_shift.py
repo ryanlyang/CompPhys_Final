@@ -73,7 +73,25 @@ CLASS_NAMES = [
     "ZJetsToNuNu",
 ]
 
-CLASS_TO_TRAIN_INDEX = {name: i for i, name in enumerate(CLASS_NAMES)}
+# JetClass canonical label ids used by weaver with data/JetClass/*.yaml.
+# This mapping was validated from weaver test workers in train.log:
+#   ZJetsToNuNu->0, HToBB->1, HToCC->2, HToGG->3, HToWW4Q->4,
+#   HToWW2Q1L->5, ZToQQ->6, WToQQ->7, TTBar->8, TTBarLep->9
+CLASS_TO_LABEL_INDEX = {
+    "ZJetsToNuNu": 0,
+    "HToBB": 1,
+    "HToCC": 2,
+    "HToGG": 3,
+    "HToWW4Q": 4,
+    "HToWW2Q1L": 5,
+    "ZToQQ": 6,
+    "WToQQ": 7,
+    "TTBar": 8,
+    "TTBarLep": 9,
+}
+FILENAME_CLASS_NAMES_BY_LABEL_INDEX = [None] * 10
+for _k, _v in CLASS_TO_LABEL_INDEX.items():
+    FILENAME_CLASS_NAMES_BY_LABEL_INDEX[_v] = _k
 
 LABEL_NAMES = [
     "label_QCD",
@@ -637,14 +655,14 @@ def read_root_file(
         y_index = y_onehot.argmax(axis=1)
     elif label_source == "filename":
         cls_name = filepath.name.split("_", 1)[0]
-        if cls_name not in CLASS_TO_TRAIN_INDEX:
+        if cls_name not in CLASS_TO_LABEL_INDEX:
             raise ValueError(
                 f"Cannot infer class from filename '{filepath.name}'. "
-                f"Expected prefix in {sorted(CLASS_TO_TRAIN_INDEX)}"
+                f"Expected prefix in {sorted(CLASS_TO_LABEL_INDEX)}"
             )
-        cls_idx = CLASS_TO_TRAIN_INDEX[cls_name]
+        cls_idx = int(CLASS_TO_LABEL_INDEX[cls_name])
         y_index = np.full(n_events, cls_idx, dtype=np.int64)
-        y_onehot = np.zeros((n_events, len(CLASS_NAMES)), dtype=np.int64)
+        y_onehot = np.zeros((n_events, len(LABEL_NAMES)), dtype=np.int64)
         y_onehot[np.arange(n_events), y_index] = 1
     else:
         raise ValueError(f"Unsupported label_source '{label_source}'")
@@ -1244,7 +1262,9 @@ def main() -> int:
         label_source=args.label_source,
     )
     print(f"Loaded {len(clean_inputs.y_index)} test jets for evaluation.")
-    class_names = CLASS_NAMES if args.label_source == "filename" else LABEL_NAMES
+    class_names = (
+        FILENAME_CLASS_NAMES_BY_LABEL_INDEX if args.label_source == "filename" else LABEL_NAMES
+    )
     uniq, counts = np.unique(clean_inputs.y_index, return_counts=True)
     class_counts = {class_names[int(k)]: int(v) for k, v in zip(uniq, counts)}
     print(f"Test label distribution: {class_counts}")

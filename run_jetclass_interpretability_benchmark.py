@@ -28,7 +28,7 @@ except ModuleNotFoundError:
     torch = None
 
 from run_jetclass_part0_baseline_and_shift import (
-    CLASS_NAMES,
+    FILENAME_CLASS_NAMES_BY_LABEL_INDEX,
     InputArrays,
     LABEL_NAMES,
     best_permutation_accuracy,
@@ -642,7 +642,9 @@ def main() -> int:
         label_source=args.label_source,
     )
     print(f"Loaded {len(eval_inputs.y_index)} evaluation jets.")
-    class_names = CLASS_NAMES if args.label_source == "filename" else LABEL_NAMES
+    class_names = (
+        FILENAME_CLASS_NAMES_BY_LABEL_INDEX if args.label_source == "filename" else LABEL_NAMES
+    )
     n_classes = len(class_names)
 
     explain_n = len(eval_inputs.y_index)
