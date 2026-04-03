@@ -1,0 +1,194 @@
+\documentclass[10pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{times}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\begin{document}
+
+\begin{center}
+    {\Large \textbf{Interpretability-Guided Training for Robust Jet Tagging Under Simulation-to-Data Shift}}\\[0.75em]
+    {\Large Preliminary Research}\\[0.5em]
+    Ryan Yang
+\end{center}
+
+\section{Progress Made and Difficulties Encountered}
+Since the project proposal, I have made substantial progress on the JetClass side of the project. I now have a working baseline Particle Transformer training pipeline on JetClass, a post-training corruption study, an interpretability benchmarking pipeline, and an initial implementation of interpretability-guided training in the style of input-gradient regularization. In practice, the project has followed the instructor's advice to begin with the simplest workable setup and only add complexity after the baseline pipeline is functioning.
+
+The current completed pieces are:
+\begin{itemize}[leftmargin=*]
+\item a baseline Particle Transformer trained on JetClass constituent-level features;
+\item a corruption-based benchmark on JetClass test data, used to study how unlabeled shift metrics correlate with supervised degradation;
+\item an interpretability benchmark comparing input gradients, Integrated Gradients, and SmoothGrad using targeted-versus-random masking tests;
+\item Slurm batch scripts and analysis code to make these studies reproducible across random seeds.
+\end{itemize}
+
+The main technical difficulty so far has been benchmarking. AspenOpenJets \cite{amram2025aspen} is an unlabeled real-data dataset, so it does not support a direct supervised test accuracy or AUC in the same way as JetClass \cite{qu2022particle}. This forced a refinement of the project design: instead of trying to claim a real-data accuracy directly, I now calibrate unlabeled shift diagnostics on controlled corruptions of JetClass, where the true labels are known, and then plan to apply those same diagnostics to AspenOpenJets later.
+
+A second difficulty was that the trainer-native metrics and the custom post-training inference path were not always numerically consistent. In particular, some custom posthoc inference runs produced non-finite logits or unrealistically poor top-1 accuracy even when the trainer itself showed reasonable validation performance. To address this, I changed the reporting logic so that trainer-native metrics are treated as authoritative for clean supervised performance, while the posthoc path is currently used mainly for relative corruption and interpretability studies. This is an important practical sanity step: it prevents a fragile analysis path from overwriting trustworthy metrics from the actual training pipeline.
+
+Finally, I have also implemented an initial interpretability-guided training code path using gradient regularization, but I do not yet have clean, stable results from that stage. In other words, the code infrastructure for the next phase is in place, but the robust training results are not yet mature enough to report.
+
+\section{Refined Scientific Question}
+The original proposal asked whether interpretability-guided training can make transformer-based jet taggers rely on more stable and physically meaningful features under simulation-to-data shift. That remains the central idea, but I have sharpened the question to make the benchmarking strategy more concrete:
+
+\begin{quote}
+\emph{Can interpretability-guided training improve the robustness of a Particle Transformer jet classifier under simulation-to-data shift while preserving strong supervised performance on JetClass, and can that robustness be quantified on unlabeled target-domain data using shift metrics that are first validated on controlled JetClass corruptions?}
+\end{quote}
+
+This refinement matters for two reasons. First, it makes the baseline model explicit: a Particle Transformer trained on JetClass constituent-level features. Second, it replaces the vague idea of ``compare JetClass to AspenOpenJets'' with a systematic two-step benchmark:
+\begin{itemize}[leftmargin=*]
+\item measure ordinary supervised performance on JetClass;
+\item validate unlabeled shift metrics on corrupted JetClass before using them on AspenOpenJets.
+\end{itemize}
+
+At this stage, the currently implemented candidate shift metrics are:
+\begin{itemize}[leftmargin=*]
+\item prediction entropy shift;
+\item confidence drop;
+\item top-1 flip rate under perturbation;
+\item mean probability drift $\left\|\hat{\mathbf p}(x)-\hat{\mathbf p}(T(x))\right\|_1$;
+\item class-distribution shift measured with Jensen--Shannon divergence.
+\end{itemize}
+
+\section{Key Equations}
+The baseline classifier is trained with multi-class cross-entropy:
+\begin{equation}
+\mathcal{L}_{\mathrm{CE}}
+=
+-\frac{1}{N}\sum_{i=1}^{N}\sum_{c=1}^{C} y_{ic}\log \hat{p}_{ic},
+\end{equation}
+where $y_{ic}$ is the one-hot truth label for jet $i$ and class $c$, and $\hat{p}_{ic}$ is the predicted probability.
+
+The supervised test accuracy is
+\begin{equation}
+\mathrm{Acc}
+=
+\frac{1}{N}\sum_{i=1}^{N}
+\mathbf{1}\!\left[
+\arg\max_c \hat{p}_{ic}
+=
+\arg\max_c y_{ic}
+\right].
+\end{equation}
+
+One important uncertainty-based diagnostic is predictive entropy:
+\begin{equation}
+H(x)
+=
+-\sum_{c=1}^{C}\hat{p}_c(x)\log \hat{p}_c(x).
+\end{equation}
+
+To quantify prediction stability under a perturbation $T$, I use the mean probability drift
+\begin{equation}
+S_{\mathrm{pert}}
+=
+\frac{1}{N}\sum_{i=1}^{N}
+\left\|
+\hat{\mathbf p}(x_i)-\hat{\mathbf p}(T(x_i))
+\right\|_1,
+\end{equation}
+and also the top-1 flip rate
+\begin{equation}
+\mathrm{FlipRate}
+=
+\frac{1}{N}\sum_{i=1}^{N}
+\mathbf{1}\!\left[
+\arg\max_c \hat{p}_c(x_i)
+\neq
+\arg\max_c \hat{p}_c(T(x_i))
+\right].
+\end{equation}
+
+To compare class distributions between two datasets $A$ and $B$, I use the average predicted class vectors
+\begin{equation}
+\bar{\mathbf p}_A
+=
+\frac{1}{N_A}\sum_{i \in A}\hat{\mathbf p}(x_i),
+\qquad
+\bar{\mathbf p}_B
+=
+\frac{1}{N_B}\sum_{i \in B}\hat{\mathbf p}(x_i),
+\end{equation}
+and a divergence such as
+\begin{equation}
+D_{\mathrm{JS}}(\bar{\mathbf p}_A,\bar{\mathbf p}_B).
+\end{equation}
+
+To validate whether an unlabeled shift metric $M$ is useful, I measure its correlation with supervised degradation on corrupted JetClass:
+\begin{equation}
+\rho_{\mathrm S}(M,\Delta\mathrm{AUC})
+\qquad \text{and} \qquad
+\rho_{\mathrm S}(M,\Delta\mathrm{Acc}).
+\end{equation}
+
+For interpretability-guided training, the main equation currently implemented is an RRR-style gradient penalty:
+\begin{equation}
+\mathcal{L}_{\mathrm{RRR}}
+=
+\mathcal{L}_{\mathrm{CE}}
++
+\lambda
+\left\|
+A \odot \nabla_x s_\theta(x)
+\right\|_2^2,
+\end{equation}
+where $s_\theta(x)$ is a chosen model score, $\lambda$ is the regularization strength, and $A$ is either an all-feature mask or an adaptive mask that emphasizes the currently most influential feature channels \cite{ross2017right}.
+
+For attribution itself, one method used in the project is Integrated Gradients \cite{sundararajan2017axiomatic}:
+\begin{equation}
+\mathrm{IG}_j(x)
+=
+(x_j-x'_j)\int_0^1
+\frac{\partial s\!\left(x' + \alpha(x-x')\right)}{\partial x_j}
+\; d\alpha.
+\end{equation}
+
+\section{Code Used to Answer the Question}
+The code for this project is organized around a small number of scripts, each aimed at a specific scientific task. The repository is:
+\begin{center}
+\url{https://github.com/ryanlyang/CompPhys_Final}
+\end{center}
+
+The main scripts currently in use are:
+\begin{itemize}[leftmargin=*]
+\item \texttt{run\_jetclass\_part0\_baseline\_and\_shift.py}: baseline evaluation and corruption-based shift benchmark;
+\item \texttt{run\_jetclass\_interpretability\_benchmark.py}: attribution benchmarking with targeted-versus-random masking;
+\item \texttt{train\_jetclass\_part0\_rrr.py}: interpretability-guided training via input-gradient regularization;
+\item Slurm scripts under \texttt{sbatch/} for reproducible execution on the research cluster.
+\end{itemize}
+
+The current output products include trainer summaries, corruption metric tables, correlation tables, interpretability summaries, and method-comparison CSV files. This is enough to support a preliminary computational study even before the AspenOpenJets stage is complete.
+
+\section{Sanity Checks and GIGO Prevention}
+I am already performing several sanity checks to reduce the chance of drawing conclusions from a broken or misleading pipeline.
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Class-balance checks.} The analysis scripts explicitly print and record the class distribution in each split. For example, the JetClass test split is checked to confirm equal representation across the 10 classes rather than an accidental class imbalance.
+
+\item \textbf{Disjoint split construction.} The train, validation, and test sets are built from disjoint file-index ranges, which reduces the risk of train--test leakage.
+
+\item \textbf{Label-mapping sanity check.} I compute a permutation diagnostic comparing raw accuracy to the best label permutation accuracy. This is useful for detecting class-index mismatches or label-order bugs.
+
+\item \textbf{Numerical stability checks.} The posthoc analysis code explicitly checks for non-finite logits and probabilities. This turned out to be essential, because some custom inference paths produced unstable outputs even when the trainer-native metrics were reasonable.
+
+\item \textbf{Trainer-versus-posthoc consistency check.} Clean supervised performance is compared against trainer-native metrics from logs or summaries. If the custom posthoc path is inconsistent, I now report the trainer-native metric as authoritative and treat the posthoc result as diagnostic only.
+
+\item \textbf{Attribution sanity check.} For interpretability benchmarking, targeted masking and random masking are performed at the same masking fractions, so differences are not simply caused by removing more constituents in one condition than the other.
+
+\item \textbf{Multi-seed reproducibility.} The pipeline is designed to run across multiple random seeds, so the final project can report whether a result is robust or only appears in a single lucky run.
+\end{itemize}
+
+These sanity checks are not just formalities; they have already caught real issues in the current pipeline, especially the mismatch between trainer-native and posthoc metrics. That debugging work is part of the actual scientific progress of the project, because it ensures that future conclusions are based on reliable outputs instead of garbage-in, garbage-out.
+
+\section{Current Status}
+At the time of this preliminary report, the baseline JetClass study is close to complete: baseline training, corruption-based benchmarking, and interpretability benchmarking are all in place and running. The AspenOpenJets stage has not yet been fully integrated into the pipeline, so I am not reporting Aspen results yet. Likewise, the interpretability-guided training code is implemented, but not yet stable enough to claim results from that stage.
+
+This means that the project has already advanced well beyond the proposal stage: the baseline system exists, the benchmarking strategy has been made concrete, multiple diagnostics and sanity checks are implemented, and the next remaining tasks are primarily target-domain integration and stable interpretability-guided training.
+
+\bibliographystyle{plain}
+\bibliography{main}
+
+\end{document}
