@@ -50,6 +50,7 @@ JITTER_LEVELS="${JITTER_LEVELS:-0.01,0.03,0.05,0.1}"
 SKIP_TRAIN="${SKIP_TRAIN:-0}"
 CHECKPOINT="${CHECKPOINT:-}"
 TRAINER_LOG="${TRAINER_LOG:-}"
+TRAINER_SUMMARY="${TRAINER_SUMMARY:-}"
 
 mkdir -p "${RUN_DIR}" "${LOG_DIR}"
 
@@ -74,6 +75,7 @@ echo "GPU arg: ${GPUS}, Device: ${DEVICE}"
 echo "Skip train: ${SKIP_TRAIN}"
 echo "Checkpoint: ${CHECKPOINT:-[none]}"
 echo "Trainer log: ${TRAINER_LOG:-[auto]}"
+echo "Trainer summary: ${TRAINER_SUMMARY:-[auto]}"
 echo "============================================================"
 echo
 
@@ -124,11 +126,20 @@ if [[ "${SKIP_TRAIN}" == "1" ]]; then
       TRAINER_LOG="${CANDIDATE_LOG}"
     fi
   fi
+  if [[ -z "${TRAINER_SUMMARY}" ]]; then
+    CANDIDATE_SUMMARY="$(dirname "${CHECKPOINT}")/summary.json"
+    if [[ -f "${CANDIDATE_SUMMARY}" ]]; then
+      TRAINER_SUMMARY="${CANDIDATE_SUMMARY}"
+    fi
+  fi
   CMD+=(--skip-train --checkpoint "${CHECKPOINT}")
 fi
 
 if [[ -n "${TRAINER_LOG}" ]]; then
   CMD+=(--trainer-log "${TRAINER_LOG}")
+fi
+if [[ -n "${TRAINER_SUMMARY}" ]]; then
+  CMD+=(--trainer-summary "${TRAINER_SUMMARY}")
 fi
 
 printf ' %q' "${CMD[@]}"

@@ -20,6 +20,7 @@ if [[ -z "${CHECKPOINT}" ]]; then
   exit 1
 fi
 TRAINER_LOG="${TRAINER_LOG:-}"
+TRAINER_SUMMARY="${TRAINER_SUMMARY:-}"
 
 FEATURE_SET="${FEATURE_SET:-kinpid}"
 LABEL_SOURCE="${LABEL_SOURCE:-filename}"
@@ -65,6 +66,7 @@ echo "Log dir: ${LOG_DIR}"
 echo "Dataset: ${DATASET_DIR}"
 echo "Checkpoint: ${CHECKPOINT}"
 echo "Trainer log: ${TRAINER_LOG:-[auto]}"
+echo "Trainer summary: ${TRAINER_SUMMARY:-[auto]}"
 echo "Feature set: ${FEATURE_SET}"
 echo "Label source: ${LABEL_SOURCE}"
 echo "Methods: ${METHODS}"
@@ -93,6 +95,12 @@ if [[ -z "${TRAINER_LOG}" ]]; then
   CANDIDATE_LOG="$(dirname "${CHECKPOINT}")/train.log"
   if [[ -f "${CANDIDATE_LOG}" ]]; then
     TRAINER_LOG="${CANDIDATE_LOG}"
+  fi
+fi
+if [[ -z "${TRAINER_SUMMARY}" ]]; then
+  CANDIDATE_SUMMARY="$(dirname "${CHECKPOINT}")/summary.json"
+  if [[ -f "${CANDIDATE_SUMMARY}" ]]; then
+    TRAINER_SUMMARY="${CANDIDATE_SUMMARY}"
   fi
 fi
 
@@ -125,6 +133,9 @@ CMD=(
 
 if [[ -n "${TRAINER_LOG}" ]]; then
   CMD+=(--trainer-log "${TRAINER_LOG}")
+fi
+if [[ -n "${TRAINER_SUMMARY}" ]]; then
+  CMD+=(--trainer-summary "${TRAINER_SUMMARY}")
 fi
 
 printf ' %q' "${CMD[@]}"

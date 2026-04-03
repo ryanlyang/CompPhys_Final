@@ -130,6 +130,8 @@ if [[ ! -f "${CHECKPOINT}" ]]; then
   echo "ERROR: expected checkpoint missing: ${CHECKPOINT}" >&2
   exit 1
 fi
+TRAINER_LOG_PATH="${RUN_DIR}/train.log"
+TRAINER_SUMMARY_PATH="${RUN_DIR}/summary.json"
 
 if [[ "${RUN_SHIFT_ANALYSIS}" == "1" ]]; then
   ANALYSIS_DIR="${RUN_DIR}/shift_eval"
@@ -163,6 +165,8 @@ if [[ "${RUN_SHIFT_ANALYSIS}" == "1" ]]; then
     --jitter-levels "${JITTER_LEVELS}"
     --skip-train
     --checkpoint "${CHECKPOINT}"
+    --trainer-log "${TRAINER_LOG_PATH}"
+    --trainer-summary "${TRAINER_SUMMARY_PATH}"
   )
 
   echo

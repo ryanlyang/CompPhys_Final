@@ -41,6 +41,8 @@ from run_jetclass_part0_baseline_and_shift import (
     predict_probs,
     prepare_split_dirs,
     resolve_trainer_log_path,
+    resolve_trainer_summary_path,
+    parse_trainer_summary_metrics,
 )
 
 
@@ -567,6 +569,14 @@ def parse_args() -> argparse.Namespace:
             "trainer-native clean accuracy is extracted for reporting."
         ),
     )
+    parser.add_argument(
+        "--trainer-summary",
+        default="",
+        help=(
+            "Optional path to trainer summary.json (e.g. RRR output). If set "
+            "(or auto-detected), clean metrics are taken from this file."
+        ),
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--feature-set", default="kinpid", choices=["kin", "kinpid", "full"])
     parser.add_argument(
@@ -641,6 +651,16 @@ def main() -> int:
         weaver_log_metrics = parse_weaver_log_metrics(trainer_log_path)
         if weaver_log_metrics:
             print(f"Detected trainer log metrics from: {trainer_log_path}")
+    trainer_summary_path = resolve_trainer_summary_path(
+        output_dir=output_dir,
+        checkpoint_path=checkpoint,
+        explicit=args.trainer_summary,
+    )
+    trainer_summary_metrics: Dict[str, float] = {}
+    if trainer_summary_path is not None:
+        trainer_summary_metrics = parse_trainer_summary_metrics(trainer_summary_path)
+        if trainer_summary_metrics:
+            print(f"Detected trainer summary metrics from: {trainer_summary_path}")
 
     split_paths = prepare_split_dirs(
         dataset_dir=dataset_dir,
@@ -696,19 +716,20 @@ def main() -> int:
     clean_probs_eval = predict_probs(model, eval_inputs, args.eval_batch_size, device)
     clean_metrics_eval = compute_supervised_metrics(eval_inputs, clean_probs_eval)
     clean_metrics_eval_posthoc = dict(clean_metrics_eval)
-    reported_clean_accuracy = float(clean_metrics_eval_posthoc["accuracy"])
+    clean_metrics_eval_report = dict(clean_metrics_eval_posthoc)
     reported_clean_accuracy_source = "posthoc_forward"
-    if "last_test_metric" in weaver_log_metrics:
-        reported_clean_accuracy = float(weaver_log_metrics["last_test_metric"])
+    if trainer_summary_metrics:
+        clean_metrics_eval_report.update(trainer_summary_metrics)
+        reported_clean_accuracy_source = "trainer_summary_json"
+    elif "last_test_metric" in weaver_log_metrics:
+        clean_metrics_eval_report["accuracy"] = float(weaver_log_metrics["last_test_metric"])
         reported_clean_accuracy_source = "weaver_test_metric_from_log"
     elif "best_validation_metric" in weaver_log_metrics:
-        reported_clean_accuracy = float(weaver_log_metrics["best_validation_metric"])
+        clean_metrics_eval_report["accuracy"] = float(weaver_log_metrics["best_validation_metric"])
         reported_clean_accuracy_source = "weaver_best_validation_metric_from_log"
     elif "current_validation_metric_last" in weaver_log_metrics:
-        reported_clean_accuracy = float(weaver_log_metrics["current_validation_metric_last"])
+        clean_metrics_eval_report["accuracy"] = float(weaver_log_metrics["current_validation_metric_last"])
         reported_clean_accuracy_source = "weaver_last_validation_metric_from_log"
-    clean_metrics_eval_report = dict(clean_metrics_eval_posthoc)
-    clean_metrics_eval_report["accuracy"] = reported_clean_accuracy
     clean_perm_eval = best_permutation_accuracy(
         y_true=eval_inputs.y_index,
         y_pred=clean_probs_eval.argmax(axis=1),
@@ -829,6 +850,10 @@ def main() -> int:
         "reported_clean_accuracy_source": reported_clean_accuracy_source,
         "weaver_log_path": str(trainer_log_path) if trainer_log_path is not None else None,
         "weaver_log_metrics": weaver_log_metrics,
+        "trainer_summary_path": (
+            str(trainer_summary_path) if trainer_summary_path is not None else None
+        ),
+        "trainer_summary_metrics": trainer_summary_metrics,
         "label_order_permutation_diagnostic_eval_split": clean_perm_eval,
         "clean_metrics_explain_subset": clean_metrics,
         "label_order_permutation_diagnostic_explain_subset": clean_perm_explain,
@@ -858,6 +883,8 @@ def main() -> int:
             f"{'accuracy_source':>18s}: {reported_clean_accuracy_source}\n"
             f"{'posthoc_accuracy':>18s}: {clean_metrics_eval_posthoc['accuracy']:.6f}"
         )
+        if "accuracy" in clean_metrics_eval_report:
+            print(f"{'reported_accuracy':>18s}: {clean_metrics_eval_report['accuracy']:.6f}")
     if weaver_log_metrics:
         print("\n=== Weaver trainer-log metrics ===")
         for k, v in weaver_log_metrics.items():

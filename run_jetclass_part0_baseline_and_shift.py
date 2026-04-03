@@ -340,6 +340,21 @@ def resolve_trainer_log_path(output_dir: Path, checkpoint_path: Path, explicit: 
     return None
 
 
+def resolve_trainer_summary_path(output_dir: Path, checkpoint_path: Path, explicit: str) -> Path | None:
+    if explicit:
+        p = Path(explicit).resolve()
+        return p if p.exists() else None
+
+    candidates = [
+        output_dir / "summary.json",
+        checkpoint_path.parent / "summary.json",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p.resolve()
+    return None
+
+
 def parse_weaver_log_metrics(log_path: Path) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
     try:
@@ -375,6 +390,39 @@ def parse_weaver_log_metrics(log_path: Path) -> Dict[str, float]:
     if last_test_metric is not None:
         metrics["last_test_metric"] = last_test_metric
     return metrics
+
+
+def parse_trainer_summary_metrics(summary_path: Path) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    try:
+        payload = json.loads(summary_path.read_text())
+    except Exception:
+        return out
+
+    # RRR trainer format.
+    test_best = payload.get("test_metrics_best")
+    if isinstance(test_best, dict):
+        for k in ("accuracy", "macro_auc", "mean_entropy", "mean_confidence"):
+            v = test_best.get(k)
+            if v is not None:
+                try:
+                    out[k] = float(v)
+                except (TypeError, ValueError):
+                    pass
+        if out:
+            return out
+
+    # Baseline/eval summary format.
+    clean = payload.get("clean_metrics")
+    if isinstance(clean, dict):
+        for k in ("accuracy", "macro_auc", "mean_entropy", "mean_confidence"):
+            v = clean.get(k)
+            if v is not None:
+                try:
+                    out[k] = float(v)
+                except (TypeError, ValueError):
+                    pass
+    return out
 
 
 def _build_wrap_index(ref: ak.Array, maxlen: int) -> Tuple[ak.Array, np.ndarray]:
@@ -1228,6 +1276,14 @@ def parse_args() -> argparse.Namespace:
             "trainer-native accuracy metrics are extracted from this log."
         ),
     )
+    parser.add_argument(
+        "--trainer-summary",
+        default="",
+        help=(
+            "Optional path to trainer summary.json (e.g. RRR output). If set "
+            "(or auto-detected), clean metrics are taken from this file."
+        ),
+    )
 
     parser.add_argument("--eval-batch-size", type=int, default=1024)
     parser.add_argument("--max-test-jets", type=int, default=200000)
@@ -1332,6 +1388,16 @@ def main() -> int:
         weaver_log_metrics = parse_weaver_log_metrics(trainer_log_path)
         if weaver_log_metrics:
             print(f"Detected trainer log metrics from: {trainer_log_path}")
+    trainer_summary_path = resolve_trainer_summary_path(
+        output_dir=output_dir,
+        checkpoint_path=checkpoint_path,
+        explicit=args.trainer_summary,
+    )
+    trainer_summary_metrics: Dict[str, float] = {}
+    if trainer_summary_path is not None:
+        trainer_summary_metrics = parse_trainer_summary_metrics(trainer_summary_path)
+        if trainer_summary_metrics:
+            print(f"Detected trainer summary metrics from: {trainer_summary_path}")
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     if device.type == "cpu" and args.device != "cpu":
@@ -1373,20 +1439,20 @@ def main() -> int:
     )
     clean_metrics = compute_supervised_metrics(clean_inputs, clean_probs)
     clean_metrics_posthoc = dict(clean_metrics)
-    reported_clean_accuracy = float(clean_metrics_posthoc["accuracy"])
+    clean_metrics_report = dict(clean_metrics_posthoc)
     reported_clean_accuracy_source = "posthoc_forward"
-    if "last_test_metric" in weaver_log_metrics:
-        reported_clean_accuracy = float(weaver_log_metrics["last_test_metric"])
+    if trainer_summary_metrics:
+        clean_metrics_report.update(trainer_summary_metrics)
+        reported_clean_accuracy_source = "trainer_summary_json"
+    elif "last_test_metric" in weaver_log_metrics:
+        clean_metrics_report["accuracy"] = float(weaver_log_metrics["last_test_metric"])
         reported_clean_accuracy_source = "weaver_test_metric_from_log"
     elif "best_validation_metric" in weaver_log_metrics:
-        reported_clean_accuracy = float(weaver_log_metrics["best_validation_metric"])
+        clean_metrics_report["accuracy"] = float(weaver_log_metrics["best_validation_metric"])
         reported_clean_accuracy_source = "weaver_best_validation_metric_from_log"
     elif "current_validation_metric_last" in weaver_log_metrics:
-        reported_clean_accuracy = float(weaver_log_metrics["current_validation_metric_last"])
+        clean_metrics_report["accuracy"] = float(weaver_log_metrics["current_validation_metric_last"])
         reported_clean_accuracy_source = "weaver_last_validation_metric_from_log"
-
-    clean_metrics_report = dict(clean_metrics_posthoc)
-    clean_metrics_report["accuracy"] = reported_clean_accuracy
     clean_class_prob_dist = clean_probs.mean(axis=0)
     clean_top1 = clean_probs.argmax(axis=1)
     perm_diag = best_permutation_accuracy(
@@ -1419,6 +1485,10 @@ def main() -> int:
         "reported_clean_accuracy_source": reported_clean_accuracy_source,
         "weaver_log_path": str(trainer_log_path) if trainer_log_path is not None else None,
         "weaver_log_metrics": weaver_log_metrics,
+        "trainer_summary_path": (
+            str(trainer_summary_path) if trainer_summary_path is not None else None
+        ),
+        "trainer_summary_metrics": trainer_summary_metrics,
         "clean_pred_class_distribution": {
             class_names[i]: float(clean_class_prob_dist[i]) for i in range(len(class_names))
         },
@@ -1446,6 +1516,8 @@ def main() -> int:
             f"{'accuracy_source':>18s}: {reported_clean_accuracy_source}\n"
             f"{'posthoc_accuracy':>18s}: {clean_metrics_posthoc['accuracy']:.6f}"
         )
+        if "accuracy" in clean_metrics_report:
+            print(f"{'reported_accuracy':>18s}: {clean_metrics_report['accuracy']:.6f}")
     if weaver_log_metrics:
         print("\n=== Weaver trainer-log metrics ===")
         for k, v in weaver_log_metrics.items():
