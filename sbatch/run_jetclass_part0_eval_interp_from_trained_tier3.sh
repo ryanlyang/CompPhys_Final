@@ -92,6 +92,31 @@ source ~/.bashrc
 set -u
 conda activate atlas_kd
 export PATH="$HOME/.local/bin:$PATH"
+export PYTHONUNBUFFERED=1
+export PYTHONFAULTHANDLER=1
+HEARTBEAT_SECS="${HEARTBEAT_SECS:-60}"
+
+run_with_heartbeat() {
+  local stage="$1"
+  shift
+
+  (
+    while true; do
+      echo "[heartbeat][${stage}] $(date '+%F %T') still running..."
+      sleep "${HEARTBEAT_SECS}"
+    done
+  ) &
+  local hb_pid=$!
+
+  set +e
+  "$@"
+  local rc=$?
+  set -e
+
+  kill "${hb_pid}" >/dev/null 2>&1 || true
+  wait "${hb_pid}" 2>/dev/null || true
+  return "${rc}"
+}
 
 cd "${REPO_ROOT}"
 
@@ -119,7 +144,7 @@ INTERP_DIR="${RUN_DIR}/interpretability"
 mkdir -p "${ANALYSIS_DIR}" "${INTERP_DIR}"
 
 ANALYSIS_CMD=(
-  python3 run_jetclass_part0_baseline_and_shift.py
+  python3 -u run_jetclass_part0_baseline_and_shift.py
   --dataset-dir "${DATASET_DIR}"
   --output-dir "${ANALYSIS_DIR}"
   --feature-set "${FEATURE_SET}"
@@ -155,10 +180,10 @@ fi
 echo "--- Analysis stage ---"
 printf ' %q' "${ANALYSIS_CMD[@]}"
 echo
-"${ANALYSIS_CMD[@]}"
+run_with_heartbeat "analysis" "${ANALYSIS_CMD[@]}"
 
 INTERP_CMD=(
-  python3 run_jetclass_interpretability_benchmark.py
+  python3 -u run_jetclass_interpretability_benchmark.py
   --dataset-dir "${DATASET_DIR}"
   --checkpoint "${CHECKPOINT}"
   --output-dir "${INTERP_DIR}"
@@ -192,7 +217,7 @@ echo
 echo "--- Interpretability stage ---"
 printf ' %q' "${INTERP_CMD[@]}"
 echo
-"${INTERP_CMD[@]}"
+run_with_heartbeat "interpretability" "${INTERP_CMD[@]}"
 
 echo
 echo "Done. Outputs:"
