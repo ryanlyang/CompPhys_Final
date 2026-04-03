@@ -34,6 +34,7 @@ from run_jetclass_part0_baseline_and_shift import (
     best_permutation_accuracy,
     build_model,
     compute_supervised_metrics,
+    forward_logits_with_mask_mode,
     js_divergence,
     load_split,
     parse_weaver_log_metrics,
@@ -42,6 +43,7 @@ from run_jetclass_part0_baseline_and_shift import (
     prepare_split_dirs,
     resolve_trainer_log_path,
     resolve_trainer_summary_path,
+    select_posthoc_forward_mask_mode,
     parse_trainer_summary_metrics,
 )
 
@@ -150,7 +152,8 @@ def _forward_probs(
             points[idx2, :, 0] = 0.0
             features[idx2, :, 0] = 0.0
             vectors[idx2, :, 0] = 0.0
-    out = model(points, features, vectors, (mask > 0.5))
+    mode = getattr(model, "_posthoc_forward_mask_mode", "bool_valid")
+    out = forward_logits_with_mask_mode(model, points, features, vectors, mask, mode)
     if not torch.isfinite(out).all():
         out = torch.nan_to_num(out, nan=0.0, posinf=50.0, neginf=-50.0)
     probs = torch.softmax(out, dim=1).clamp_min(1e-12)
@@ -712,6 +715,13 @@ def main() -> int:
         checkpoint_path=checkpoint,
         device=device,
     )
+    mask_mode = select_posthoc_forward_mask_mode(
+        model=model,
+        inputs=eval_inputs,
+        batch_size=args.eval_batch_size,
+        device=device,
+    )
+    print(f"Posthoc forward mask mode: {mask_mode}")
 
     clean_probs_eval = predict_probs(model, eval_inputs, args.eval_batch_size, device)
     clean_metrics_eval = compute_supervised_metrics(eval_inputs, clean_probs_eval)
@@ -833,6 +843,7 @@ def main() -> int:
         "feature_set": args.feature_set,
         "label_source": args.label_source,
         "class_names": class_names,
+        "posthoc_forward_mask_mode": getattr(model, "_posthoc_forward_mask_mode", None),
         "target_mode": args.target_mode,
         "methods": methods,
         "mask_fractions": mask_fractions,

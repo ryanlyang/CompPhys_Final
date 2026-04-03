@@ -110,6 +110,7 @@ LABEL_NAMES = [
 FEATURE_DIMS = {"kin": 7, "kinpid": 13, "full": 17}
 CORRUPTION_TYPES = ("gaussian_noise", "dropout", "masking", "eta_phi_jitter")
 _INPUT_TRANSFORM_CACHE: Dict[str, Dict[str, Dict[str, object]]] = {}
+_FORWARD_MASK_MODES = ("bool_valid", "float_valid", "bool_invalid", "float_invalid")
 
 
 @dataclass
@@ -557,7 +558,7 @@ def _build_features(
     table: Dict[str, ak.Array],
     transforms: Dict[str, Dict[str, object]],
     eps: float = 1e-8,
-) -> Tuple[List[ak.Array], List[ak.Array], List[ak.Array], List[ak.Array]]:
+) -> Tuple[List[ak.Array], List[ak.Array], List[ak.Array]]:
     p4 = vector.zip(
         {
             "px": table["part_px"],
@@ -638,8 +639,7 @@ def _build_features(
     pf_points = _assemble("pf_points")
     pf_features = _assemble("pf_features")
     pf_vectors = _assemble("pf_vectors")
-    pf_mask = _assemble("pf_mask")
-    return pf_points, pf_features, pf_vectors, pf_mask
+    return pf_points, pf_features, pf_vectors
 
 
 def _stack_group(
@@ -660,46 +660,57 @@ def _stack_group(
         if v.ndim == 1:
             v = ak.unflatten(v, 1)
 
+        # Fast path for regular jagged arrays.
+        if pad_mode != "wrap":
+            try:
+                padded = ak.fill_none(ak.pad_none(v, length, clip=True), pad_value)
+                dense = ak.to_numpy(padded).astype(np.float32, copy=False)
+                return dense
+            except Exception:
+                pass
+
         counts = ak.to_numpy(ak.num(v, axis=1)).astype(np.int64, copy=False)
         n = int(counts.shape[0])
         out = np.full((n, length), pad_value, dtype=np.float32)
         if n == 0:
             return out
 
-        # Flatten one jagged axis and rebuild dense rows using offsets/counts.
-        # This avoids awkward RegularArray conversions that fail on older versions.
-        flat = ak.to_numpy(ak.flatten(v, axis=1))
-        if flat.size == 0:
-            return out
-        try:
-            flat = flat.astype(np.float32, copy=False)
-        except Exception as exc:
-            raise ValueError(
-                "Unable to cast flattened constituent array to float32. "
-                "Input appears non-numeric or irregular beyond first jagged axis."
-            ) from exc
-
-        starts = np.zeros(n, dtype=np.int64)
-        if n > 1:
-            starts[1:] = np.cumsum(counts[:-1], dtype=np.int64)
-
-        nonempty_rows = np.flatnonzero(counts > 0)
+        # Robust row-wise fallback for irregular awkward layouts.
         base = np.arange(length, dtype=np.int64)
+        nonempty_rows = np.flatnonzero(counts > 0)
         for ridx in nonempty_rows.tolist():
-            c = int(counts[ridx])
-            s = int(starts[ridx])
+            row = v[ridx]
+            try:
+                row_np = np.asarray(ak.to_numpy(row), dtype=np.float32).reshape(-1)
+            except Exception:
+                row_np = np.asarray(ak.to_list(row), dtype=np.float32).reshape(-1)
+            if row_np.size == 0:
+                continue
             if pad_mode == "wrap":
-                gather = s + (base % c)
-                out[ridx, :] = flat[gather]
+                out[ridx, :] = row_np[base % row_np.size]
             else:
-                take = min(c, length)
-                out[ridx, :take] = flat[s : s + take]
+                take = min(int(row_np.size), length)
+                out[ridx, :take] = row_np[:take]
         return out
 
     cols: List[np.ndarray] = [_dense_from_jagged(v) for v in arrs]
 
     stacked = np.stack(cols, axis=1).astype(np.float32, copy=False)
     return stacked
+
+
+def _build_mask_from_counts(part_energy: ak.Array, max_num_particles: int) -> np.ndarray:
+    counts = ak.to_numpy(ak.num(part_energy, axis=1)).astype(np.int64, copy=False)
+    n = int(counts.shape[0])
+    length = int(max_num_particles)
+    out = np.zeros((n, 1, length), dtype=np.float32)
+    if n == 0 or length <= 0:
+        return out
+    clipped = np.clip(counts, 0, length)
+    for i, k in enumerate(clipped.tolist()):
+        if k > 0:
+            out[i, 0, :k] = 1.0
+    return out
 
 
 def read_root_file(
@@ -749,11 +760,14 @@ def read_root_file(
     table = tree.arrays(load_branches)
 
     transforms = _load_input_transforms(feature_set)
-    pf_points, pf_features, pf_vectors, pf_mask = _build_features(table, transforms)
+    pf_points, pf_features, pf_vectors = _build_features(table, transforms)
     x_points = _stack_group(pf_points, transforms["pf_points"], max_num_particles)
     x_features = _stack_group(pf_features, transforms["pf_features"], max_num_particles)
     x_vectors = _stack_group(pf_vectors, transforms["pf_vectors"], max_num_particles)
-    x_mask = _stack_group(pf_mask, transforms["pf_mask"], max_num_particles)
+    x_mask = _build_mask_from_counts(table["part_energy"], max_num_particles=max_num_particles)
+    x_points = np.nan_to_num(x_points, nan=0.0, posinf=0.0, neginf=0.0)
+    x_features = np.nan_to_num(x_features, nan=0.0, posinf=0.0, neginf=0.0)
+    x_vectors = np.nan_to_num(x_vectors, nan=0.0, posinf=0.0, neginf=0.0)
     x_mask, n_empty = _ensure_nonempty_mask_np(x_points, x_features, x_vectors, x_mask)
     if n_empty > 0:
         print(
@@ -885,6 +899,67 @@ def build_model(feature_set: str, num_classes: int, checkpoint_path: Path, devic
     return model
 
 
+def forward_logits_with_mask_mode(
+    model: torch.nn.Module,
+    points: torch.Tensor,
+    features: torch.Tensor,
+    vectors: torch.Tensor,
+    mask: torch.Tensor,
+    mode: str,
+) -> torch.Tensor:
+    if mode == "bool_valid":
+        m = mask > 0.5
+    elif mode == "float_valid":
+        m = mask
+    elif mode == "bool_invalid":
+        m = ~(mask > 0.5)
+    elif mode == "float_invalid":
+        m = (1.0 - mask).clamp(0.0, 1.0)
+    else:
+        raise ValueError(f"Unsupported mask forward mode '{mode}'")
+    return model(points, features, vectors, m)
+
+
+def _score_forward_mode(logits: torch.Tensor) -> Tuple[float, float]:
+    finite = torch.isfinite(logits)
+    finite_frac = float(finite.float().mean().item())
+    safe = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
+    std = float(safe.std().item())
+    return finite_frac, std
+
+
+def select_posthoc_forward_mask_mode(
+    model: torch.nn.Module,
+    inputs: InputArrays,
+    batch_size: int,
+    device: torch.device,
+) -> str:
+    n_probe = min(len(inputs.y_index), max(256, batch_size))
+    points = torch.from_numpy(inputs.points[:n_probe]).to(device)
+    features = torch.from_numpy(inputs.features[:n_probe]).to(device)
+    vectors = torch.from_numpy(inputs.vectors[:n_probe]).to(device)
+    mask = torch.from_numpy(inputs.mask[:n_probe]).to(device)
+    points = torch.nan_to_num(points, nan=0.0, posinf=0.0, neginf=0.0)
+    features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+    vectors = torch.nan_to_num(vectors, nan=0.0, posinf=0.0, neginf=0.0)
+    mask = torch.nan_to_num(mask, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+
+    best_mode = "bool_valid"
+    best_tuple = (-1.0, -1.0)
+    with torch.no_grad():
+        for mode in _FORWARD_MASK_MODES:
+            try:
+                logits = forward_logits_with_mask_mode(model, points, features, vectors, mask, mode)
+            except Exception:
+                continue
+            score = _score_forward_mode(logits)
+            if score > best_tuple:
+                best_tuple = score
+                best_mode = mode
+    setattr(model, "_posthoc_forward_mask_mode", best_mode)
+    return best_mode
+
+
 def predict_probs(
     model: torch.nn.Module,
     inputs: InputArrays,
@@ -893,6 +968,15 @@ def predict_probs(
 ) -> np.ndarray:
     outs: List[np.ndarray] = []
     n = len(inputs.y_index)
+    mask_mode = getattr(model, "_posthoc_forward_mask_mode", None)
+    if mask_mode not in _FORWARD_MASK_MODES:
+        mask_mode = select_posthoc_forward_mask_mode(
+            model=model,
+            inputs=inputs,
+            batch_size=batch_size,
+            device=device,
+        )
+        print(f"Posthoc forward mask mode: {mask_mode}")
     with torch.no_grad():
         for start in range(0, n, batch_size):
             end = min(start + batch_size, n)
@@ -922,8 +1006,14 @@ def predict_probs(
                     points[idx2, :, 0] = 0.0
                     features[idx2, :, 0] = 0.0
                     vectors[idx2, :, 0] = 0.0
-            # Match weaver data pipeline: use boolean constituent mask.
-            pred = model(points, features, vectors, (mask > 0.5))
+            pred = forward_logits_with_mask_mode(
+                model=model,
+                points=points,
+                features=features,
+                vectors=vectors,
+                mask=mask,
+                mode=mask_mode,
+            )
             pred = pred.detach().cpu().numpy()
             outs.append(pred)
     raw = np.concatenate(outs, axis=0)
@@ -1481,6 +1571,7 @@ def main() -> int:
     summary = {
         "label_source": args.label_source,
         "class_names": class_names,
+        "posthoc_forward_mask_mode": getattr(model, "_posthoc_forward_mask_mode", None),
         "clean_metrics": clean_metrics_report,
         "clean_metrics_posthoc": clean_metrics_posthoc,
         "reported_clean_accuracy_source": reported_clean_accuracy_source,

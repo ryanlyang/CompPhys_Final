@@ -15,7 +15,8 @@
 \end{center}
 
 \section{Progress Made and Difficulties Encountered}
-Since the project proposal, I have made substantial progress on the JetClass side of the project. I now have a working baseline Particle Transformer training pipeline on JetClass, a post-training corruption study, an interpretability benchmarking pipeline, and an initial implementation of interpretability-guided training in the style of input-gradient regularization. In practice, the project has followed the instructor's advice to begin with the simplest workable setup and only add complexity after the baseline pipeline is functioning.
+Since the project proposal I have made good progress on the JetClass side of the project. I now have a working baseline Particle Transformer training pipeline on JetClass, a post-training corruption study, an interpretability benchmarking pipeline, and an initial implementation of the interpretability-guided training in the style of input gradient regularization \cite{ross2017right}. 
+$\newline$
 
 The current completed pieces are:
 \begin{itemize}[leftmargin=*]
@@ -24,27 +25,32 @@ The current completed pieces are:
 \item an interpretability benchmark comparing input gradients, Integrated Gradients, and SmoothGrad using targeted-versus-random masking tests;
 \item Slurm batch scripts and analysis code to make these studies reproducible across random seeds.
 \end{itemize}
+$\newline$
 
-The main technical difficulty so far has been benchmarking. AspenOpenJets \cite{amram2025aspen} is an unlabeled real-data dataset, so it does not support a direct supervised test accuracy or AUC in the same way as JetClass \cite{qu2022particle}. This forced a refinement of the project design: instead of trying to claim a real-data accuracy directly, I now calibrate unlabeled shift diagnostics on controlled corruptions of JetClass, where the true labels are known, and then plan to apply those same diagnostics to AspenOpenJets later.
+The main technical difficult so far has been the benchmarking.  AspenOpenJets \cite{amram2025aspen} is an unlabeled real particle data dataset, so it doesn't support a direct supervised test accuracy or AUC in the same way that JetClass \cite{qu2022particle} does. This made it so I had to refine the project setup: instead of trying to claim real-data accuracy directly, I now calibrate the unlabeled shift diagnostics on controlled corruptions of JetClass, where the true labels are known, and then plan to apply the same diagnostics to AspenOpenJets later. 
 
-A second difficulty was that the trainer-native metrics and the custom post-training inference path were not always numerically consistent. In particular, some custom posthoc inference runs produced non-finite logits or unrealistically poor top-1 accuracy even when the trainer itself showed reasonable validation performance. To address this, I changed the reporting logic so that trainer-native metrics are treated as authoritative for clean supervised performance, while the posthoc path is currently used mainly for relative corruption and interpretability studies. This is an important practical sanity step: it prevents a fragile analysis path from overwriting trustworthy metrics from the actual training pipeline.
 
-Finally, I have also implemented an initial interpretability-guided training code path using gradient regularization, but I do not yet have clean, stable results from that stage. In other words, the code infrastructure for the next phase is in place, but the robust training results are not yet mature enough to report.
+A second difficult I encountered was the trainer-native metrics and our custom post-training inference path were not always numerically consistent. In particular, my custom posthoc inference runs produced unrealistically poor top-1 accuracy even when the trainer itself showed strong validation performance. To address this, I changed the metrics to use exactly trainer-native style analysis. This was an important practical sanity step to keep metrics reliable and strong.
 
+Finally, I also implemented an intial interpretability-guided training code path using gradient regularization, but I do not yet have the clean, stable results from that stage. In other words, the code infrastructure for the next phase is in place, but the results are still in progress.
+
+$\newline$
 \section{Refined Scientific Question}
-The original proposal asked whether interpretability-guided training can make transformer-based jet taggers rely on more stable and physically meaningful features under simulation-to-data shift. That remains the central idea, but I have sharpened the question to make the benchmarking strategy more concrete:
+
+The original proposal asked whether interpretability-guided training can make transformer-based jet taggers rely on more stable and physically meaningful features under the simulation-to-data shift. That stays as the core idea, but I have sharpened the question to make the benchmarking strategy more concrete:
 
 \begin{quote}
 \emph{Can interpretability-guided training improve the robustness of a Particle Transformer jet classifier under simulation-to-data shift while preserving strong supervised performance on JetClass, and can that robustness be quantified on unlabeled target-domain data using shift metrics that are first validated on controlled JetClass corruptions?}
 \end{quote}
 
-This refinement matters for two reasons. First, it makes the baseline model explicit: a Particle Transformer trained on JetClass constituent-level features. Second, it replaces the vague idea of ``compare JetClass to AspenOpenJets'' with a systematic two-step benchmark:
-\begin{itemize}[leftmargin=*]
-\item measure ordinary supervised performance on JetClass;
-\item validate unlabeled shift metrics on corrupted JetClass before using them on AspenOpenJets.
-\end{itemize}
+This refinement is important for two reasons. First of all, it makes the baseline mode explicit: it's a Particle Transformer trained on JetClass constituent-level features. Second, it replaces the vague idea of compare JetClass to AspenOpenJets with a systematic two-step benchmark:
 
-At this stage, the currently implemented candidate shift metrics are:
+\begin{itemize}[leftmargin=*]
+\item measure ordinary supervised performance on JetClass
+\item validate unlabeled shift metrics on corrupted JetClass before using them on AspenOpenJets
+\end{itemize}
+$\newline$
+The currently implemented candidate shift metrics are (might end up trying more, might not):
 \begin{itemize}[leftmargin=*]
 \item prediction entropy shift;
 \item confidence drop;
@@ -52,6 +58,10 @@ At this stage, the currently implemented candidate shift metrics are:
 \item mean probability drift $\left\|\hat{\mathbf p}(x)-\hat{\mathbf p}(T(x))\right\|_1$;
 \item class-distribution shift measured with Jensen--Shannon divergence.
 \end{itemize}
+
+
+$\newline$
+
 
 \section{Key Equations}
 The baseline classifier is trained with multi-class cross-entropy:
@@ -146,18 +156,27 @@ For attribution itself, one method used in the project is Integrated Gradients \
 \; d\alpha.
 \end{equation}
 
+$\newline$
+
 \section{Code Used to Answer the Question}
-The code for this project is organized around a small number of scripts, each aimed at a specific scientific task. The repository is:
+The working repository for this project is:
 \begin{center}
 \url{https://github.com/ryanlyang/CompPhys_Final}
 \end{center}
 
-The main scripts currently in use are:
+Most of the base code structure is inherited from:
+\begin{center}
+\url{https://github.com/jet-universe/particle_transformer}
+\end{center}
+This inherited portion includes the underlying Particle Transformer model/network setup, dataset configuration files, and core Weaver-based training infrastructure.
+
+The project-specific code that I added or substantially modified is:
 \begin{itemize}[leftmargin=*]
 \item \texttt{run\_jetclass\_part0\_baseline\_and\_shift.py}: baseline evaluation and corruption-based shift benchmark;
 \item \texttt{run\_jetclass\_interpretability\_benchmark.py}: attribution benchmarking with targeted-versus-random masking;
 \item \texttt{train\_jetclass\_part0\_rrr.py}: interpretability-guided training via input-gradient regularization;
-\item Slurm scripts under \texttt{sbatch/} for reproducible execution on the research cluster.
+\item custom Slurm scripts under \texttt{sbatch/} for reproducible multi-seed runs, eval-only runs, and dependency-based scheduling on the research cluster;
+\item reporting and analysis integration updates (for example, trainer-metric based clean-performance reporting when posthoc inference is unstable).
 \end{itemize}
 
 The current output products include trainer summaries, corruption metric tables, correlation tables, interpretability summaries, and method-comparison CSV files. This is enough to support a preliminary computational study even before the AspenOpenJets stage is complete.
