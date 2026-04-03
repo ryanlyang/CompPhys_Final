@@ -16,6 +16,7 @@ where A can be:
 """
 
 import argparse
+import gc
 import json
 import math
 import random
@@ -98,9 +99,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--train-indices", default="0-7")
     p.add_argument("--val-indices", default="8")
     p.add_argument("--test-indices", default="9")
-    p.add_argument("--max-train-jets", type=int, default=150000)
-    p.add_argument("--max-val-jets", type=int, default=50000)
-    p.add_argument("--max-test-jets", type=int, default=150000)
+    p.add_argument("--max-train-jets", type=int, default=50000)
+    p.add_argument("--max-val-jets", type=int, default=10000)
+    p.add_argument("--max-test-jets", type=int, default=50000)
 
     p.add_argument("--epochs", type=int, default=12)
     p.add_argument("--batch-size", type=int, default=256)
@@ -392,16 +393,6 @@ def main() -> int:
     )
     print(f"Loaded {len(val_inputs.y_index)} val jets.")
 
-    print(f"Loading test split from {len(test_files)} files...")
-    test_inputs = load_split(
-        files=test_files,
-        feature_set=args.feature_set,
-        max_num_particles=args.max_num_particles,
-        max_jets=args.max_test_jets,
-        label_source=args.label_source,
-    )
-    print(f"Loaded {len(test_inputs.y_index)} test jets.")
-
     class_names = (
         FILENAME_CLASS_NAMES_BY_LABEL_INDEX if args.label_source == "filename" else LABEL_NAMES
     )
@@ -409,7 +400,6 @@ def main() -> int:
     for split_name, y in [
         ("train", train_inputs.y_index),
         ("val", val_inputs.y_index),
-        ("test", test_inputs.y_index),
     ]:
         uniq, counts = np.unique(y, return_counts=True)
         dist = {class_names[int(k)]: int(v) for k, v in zip(uniq, counts)}
@@ -580,6 +570,21 @@ def main() -> int:
     print("\n=== Final best-checkpoint metrics ===")
     train_best = eval_split_metrics(model, "train(best)", train_inputs, args.eval_batch_size, device)
     val_best = eval_split_metrics(model, "val(best)", val_inputs, args.eval_batch_size, device)
+
+    # Load test only after training to reduce peak host-memory usage.
+    gc.collect()
+    print(f"Loading test split from {len(test_files)} files...")
+    test_inputs = load_split(
+        files=test_files,
+        feature_set=args.feature_set,
+        max_num_particles=args.max_num_particles,
+        max_jets=args.max_test_jets,
+        label_source=args.label_source,
+    )
+    print(f"Loaded {len(test_inputs.y_index)} test jets.")
+    uniq_t, cnt_t = np.unique(test_inputs.y_index, return_counts=True)
+    test_dist = {class_names[int(k)]: int(v) for k, v in zip(uniq_t, cnt_t)}
+    print(f"test class distribution: {test_dist}")
     test_best = eval_split_metrics(model, "test(best)", test_inputs, args.eval_batch_size, device)
 
     feature_mask_out = (

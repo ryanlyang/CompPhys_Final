@@ -16,14 +16,14 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-/home/ryreu/atlas/CompPhys_Final/runs/jetclass_part0
 FEATURE_SET="${FEATURE_SET:-kinpid}"
 LABEL_SOURCE="${LABEL_SOURCE:-filename}"
 SEED="${SEED:-0}"
-RUN_TAG="${RUN_TAG:-part0_${FEATURE_SET}_seed${SEED}_rrr150k50k150k}"
+RUN_TAG="${RUN_TAG:-part0_${FEATURE_SET}_seed${SEED}_rrr50k10k50k}"
 RUN_DIR="${RUN_DIR:-${OUTPUT_ROOT}/${RUN_TAG}_job${SLURM_JOB_ID:-manual}}"
 LOG_DIR="${LOG_DIR:-${OUTPUT_ROOT}/slurm_logs/${RUN_TAG}}"
 
 # Data volumes
-TRAIN_JETS="${TRAIN_JETS:-150000}"
-VAL_JETS="${VAL_JETS:-50000}"
-TEST_JETS="${TEST_JETS:-150000}"
+TRAIN_JETS="${TRAIN_JETS:-50000}"
+VAL_JETS="${VAL_JETS:-10000}"
+TEST_JETS="${TEST_JETS:-50000}"
 
 # Split by per-class file index
 TRAIN_INDICES="${TRAIN_INDICES:-0-7}"
