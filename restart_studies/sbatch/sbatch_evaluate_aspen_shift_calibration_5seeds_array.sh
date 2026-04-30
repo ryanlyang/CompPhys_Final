@@ -34,8 +34,8 @@ MODEL_RUN_NAME="${MODEL_RUN_NAME:-${RUN_BASENAME}_seed${SEED}}"
 OUTPUT_RUN_NAME="${OUTPUT_RUN_NAME:-${MODEL_RUN_NAME}_aspen_shift_1M}"
 
 SINGLE_SEED_SCRIPT_CANDIDATES=(
-  "${WORKDIR}/restart_studies/sbatch_evaluate_aspen_shift_calibration.sh"
-  "${PROJECT_ROOT}/restart_studies/sbatch_evaluate_aspen_shift_calibration.sh"
+  "${WORKDIR}/restart_studies/sbatch/sbatch_evaluate_aspen_shift_calibration.sh"
+  "${PROJECT_ROOT}/restart_studies/sbatch/sbatch_evaluate_aspen_shift_calibration.sh"
 )
 SINGLE_SEED_SCRIPT=""
 for c in "${SINGLE_SEED_SCRIPT_CANDIDATES[@]}"; do

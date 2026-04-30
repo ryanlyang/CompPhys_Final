@@ -58,8 +58,8 @@ to_tag() {
 RUN_NAME="${RUN_NAME:-${RUN_BASENAME}_${A_SOURCE}_lam$(to_tag "${LAMBDA_RRR}")_mask$(to_tag "${MASK_FRAC}")}"
 
 SINGLE_SCRIPT_CANDIDATES=(
-  "${WORKDIR}/restart_studies/sbatch_train_rrr_find_another_single.sh"
-  "${PROJECT_ROOT}/restart_studies/sbatch_train_rrr_find_another_single.sh"
+  "${WORKDIR}/restart_studies/sbatch/sbatch_train_rrr_find_another_single.sh"
+  "${PROJECT_ROOT}/restart_studies/sbatch/sbatch_train_rrr_find_another_single.sh"
 )
 SINGLE_SCRIPT=""
 for c in "${SINGLE_SCRIPT_CANDIDATES[@]}"; do

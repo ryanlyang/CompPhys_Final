@@ -35,8 +35,8 @@ RUN_NAME="${RUN_BASENAME}_seed${SEED}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${PROJECT_ROOT}/restart_studies/results}"
 
 SINGLE_SEED_SCRIPT_CANDIDATES=(
-  "${WORKDIR}/restart_studies/sbatch_reimplement_preliminary_studies.sh"
-  "${PROJECT_ROOT}/restart_studies/sbatch_reimplement_preliminary_studies.sh"
+  "${WORKDIR}/restart_studies/sbatch/sbatch_reimplement_preliminary_studies.sh"
+  "${PROJECT_ROOT}/restart_studies/sbatch/sbatch_reimplement_preliminary_studies.sh"
 )
 SINGLE_SEED_SCRIPT=""
 for c in "${SINGLE_SEED_SCRIPT_CANDIDATES[@]}"; do

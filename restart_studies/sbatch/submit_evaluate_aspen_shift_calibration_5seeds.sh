@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORKDIR="$(cd "$(dirname "$0")/.." && pwd)"
+WORKDIR="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${WORKDIR}"
 
-SCRIPT="restart_studies/sbatch_evaluate_aspen_shift_calibration_5seeds_array.sh"
+SCRIPT="restart_studies/sbatch/sbatch_evaluate_aspen_shift_calibration_5seeds_array.sh"
 if [[ ! -f "${SCRIPT}" ]]; then
   echo "ERROR: Missing ${SCRIPT}" >&2
   exit 2
